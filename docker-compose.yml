@@ -1,0 +1,16 @@
+# docker compose up -d   ->  ws://localhost:8787/ws  (health: http://localhost:8787/health)
+# State is in memory: restarting the container clears rooms. The repo ships no
+# database-backed store, so there is no Postgres profile.
+services:
+  gamesaloon:
+    build: .
+    image: gamesaloon:local
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8787}:${PORT:-8787}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-8787}
