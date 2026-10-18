@@ -14,6 +14,8 @@ import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { achievementArgs, parseCreatedId, parseExisting, planCommands, portalJson, validateCatalog } from './catalog.ts'
 import type { Catalog } from './catalog.ts'
+import { createProjectArgv, parseProjectId } from './project.ts'
+import type { CreateProjectRequest, CreateProjectResult } from './project.ts'
 import { isLegacyGame } from '../store/legacy.ts'
 import type { TableApi } from '../store/tables.ts'
 
@@ -33,6 +35,8 @@ export interface PublisherConfig {
   /** Optional: mirror every OWNER-game run into the tenant table etc_deploy_runs (ETCITO_URL + ETCITO_API_KEY). */
   recorder?: TableApi
   maxQueuedRuns?: number
+  /** argv after the binary that creates a Wavedash project ({slug}/{name} substituted per element); unset = 501. */
+  wavedashCreateArgs?: string[]
 }
 export type RunStatus = 'queued' | 'running' | 'ok' | 'failed'
 export type Platform = 'wavedash' | 'itch'
@@ -204,9 +208,10 @@ export function createPublisher(cfg: PublisherConfig) {
    * gets a private HOME + TMPDIR under its work dir (removed with it) and only its own request token.
    */
   const sharedHome = (run: Run): boolean => run.game === '' || isLegacyGame(run.game)
-  async function exec(args: string[], cwd: string, run: Run, extraEnv: Record<string, string> = {}, bin: string = cfg.wavedashBin): Promise<{ code: number | null; out: string }> {
+  async function exec(args: string[], cwd: string, run: Run, extraEnv: Record<string, string> = {}, bin: string = cfg.wavedashBin,
+    opts: { privateHome?: boolean; timeoutMs?: number } = {}): Promise<{ code: number | null; out: string }> {
     let env: Record<string, string>
-    if (sharedHome(run)) {
+    if (sharedHome(run) && !opts.privateHome) {
       env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: cfg.home, CI: '1', ...extraEnv }
     } else {
       // run.id is a server-made UUID: the per-run dirs never come from the request.
@@ -226,7 +231,7 @@ export function createPublisher(cfg: PublisherConfig) {
         partial = partial.slice(cut)
       }
       const child = spawn(bin, args, { cwd, shell: false, env })
-      const timer = setTimeout(() => { out += '\n[publisher] timeout, killing the CLI\n'; child.kill('SIGKILL') }, cfg.runTimeoutMs)
+      const timer = setTimeout(() => { out += '\n[publisher] timeout, killing the CLI\n'; child.kill('SIGKILL') }, opts.timeoutMs ?? cfg.runTimeoutMs)
       const feed = (b: Buffer) => { const s = b.toString('utf8'); out += s; partial += s; flush(false) }
       child.stdout.on('data', feed)
       child.stderr.on('data', feed)
@@ -496,8 +501,53 @@ export function createPublisher(cfg: PublisherConfig) {
     return { ok: r.code === 0, detail: scrub(r.out.replace(/\u001b\[[0-9;]*m/g, '').trim(), env).slice(0, 600) }
   }
 
+  const probeRun = (game: string): Run => ({ id: randomUUID(), game, action: 'push', artifact: null, build_id: null, request_id: null, publisher_id: null, message: '', status: 'running', exit_code: null, started_at: Date.now(), ended_at: null, log: '' })
+
+  /** Creates the Wavedash project with the configured argv template; serialised with the runs. Creator games get a private HOME. */
+  async function createProject(req: CreateProjectRequest, token?: string): Promise<CreateProjectResult> {
+    checkSlug(req.game)
+    const env = tokenEnv(token)
+    if (!env.WAVEDASH_TOKEN) throw new PublisherError(409, 'Wavedash API key missing (tenant setting wavedash_api_token)')
+    const template = cfg.wavedashCreateArgs
+    if (!template || template.length === 0) throw new PublisherError(501, 'Wavedash project creation is not configured (PUBLISHER_WAVEDASH_CREATE_ARGS)')
+    const name = clean(req.name, 80) || req.game
+    const argv = createProjectArgv(template, req.game, name)
+    const probe = probeRun(req.game)
+    const work = join(dirs.work, probe.id)
+    const job = chain.then(async (): Promise<CreateProjectResult> => {
+      try {
+        await mkdir(work, { recursive: true, mode: 0o700 })
+        const r = await exec(argv, work, probe, env, cfg.wavedashBin, { timeoutMs: Math.min(cfg.runTimeoutMs, 120_000) })
+        const id = parseProjectId(r.out)
+        return { ok: r.code === 0 && id !== null, game_id: id, detail: scrub(r.out.replace(/\u001b\[[0-9;]*m/g, '').trim(), env).slice(-600) }
+      } catch (e) {
+        // Never reject: a failure here must not break the chain for later runs.
+        return { ok: false, game_id: null, detail: scrub(`[publisher] ${(e as Error).message}`, env).slice(-600) }
+      } finally {
+        await rm(work, { recursive: true, force: true }).catch(() => undefined)
+      }
+    })
+    chain = job
+    return await job
+  }
+
+  /** `wavedash auth status` in a private empty HOME (even for owner games): only the request token decides. */
+  async function wavedashStatus(game: string, token?: string): Promise<{ ok: boolean; detail: string }> {
+    checkSlug(game)
+    const env = tokenEnv(token)
+    if (!env.WAVEDASH_TOKEN) throw new PublisherError(409, 'Wavedash API key missing (tenant setting wavedash_api_token)')
+    const probe = probeRun(game)
+    try {
+      const r = await exec(['auth', 'status'], cfg.dataDir, probe, env, cfg.wavedashBin, { privateHome: true })
+      const text = r.out.replace(/\u001b\[[0-9;]*m/g, '').trim()
+      return { ok: r.code === 0 && /authenticated/i.test(text) && !/not authenticated/i.test(text), detail: scrub(text, env).slice(0, 300) }
+    } finally {
+      await rm(join(dirs.work, probe.id), { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
   return {
-    itchStatus,
+    itchStatus, createProject, wavedashStatus,
     games: () => Object.entries(cfg.games ?? {}).map(([id, g]) => ({ id, name: g.name })),
     listArtifacts, saveArtifact, startRun, startCatalog, getRun, listRuns, authStatus,
     /** Resolves when every queued run has finished (tests, graceful shutdown). */

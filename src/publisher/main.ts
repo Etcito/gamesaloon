@@ -6,11 +6,14 @@
 // ETCITO_URL + ETCITO_API_KEY (optional: tenant API + gsk_ key, to mirror OWNER-game runs into etc_deploy_runs),
 // WAVEDASH_BIN (wavedash), PUBLISHER_GAMES (OPTIONAL JSON path: {"my-game":{"name":"My Game","game_id":"..."}}; absent = fine,
 // the backoffice sends game + game_id with every run; a run without game_id uses the entry of this file), PUBLISHER_MAX_QUEUE (8),
-// OWNER_GAMES (comma-separated game names treated as owner games; default empty).
+// OWNER_GAMES (comma-separated game names treated as owner games; default empty),
+// PUBLISHER_WAVEDASH_CREATE_ARGS (optional JSON argv array after the binary, with {slug}/{name}, that creates a Wavedash
+// project; unset = project creation answers 501; a bad value stops the start).
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCrmTableApi } from '../store/tables.ts'
 import { createPublisher, type GameConfig } from './runner.ts'
+import { parseCreateArgsEnv } from './project.ts'
 import { createHandshakeUpdater } from './handshake.ts'
 import { createPublisherServer } from './server.ts'
 
@@ -29,6 +32,7 @@ const publisher = createPublisher({
   // Mirror owner runs into the tenant (etc_deploy_runs) when configured; otherwise the publisher works alone.
   recorder: env.ETCITO_URL && env.ETCITO_API_KEY ? createCrmTableApi({ baseUrl: env.ETCITO_URL, apiKey: env.ETCITO_API_KEY }) : undefined,
   maxQueuedRuns: Number(env.PUBLISHER_MAX_QUEUE ?? 8),
+  wavedashCreateArgs: parseCreateArgsEnv(env.PUBLISHER_WAVEDASH_CREATE_ARGS),
 })
 const server = createPublisherServer(publisher, {
   key,

@@ -52,6 +52,12 @@ export function createPublisherServer(publisher: Publisher, opts: { key: string;
 
       if (req.method === 'GET' && path === '/games') return send(res, 200, { games: publisher.games() })
       if (req.method === 'GET' && path === '/auth/status') return send(res, 200, await publisher.authStatus(wavedashToken(req)))
+      if (req.method === 'GET' && path === '/wavedash/status') return send(res, 200, await publisher.wavedashStatus(url.searchParams.get('game') ?? '', wavedashToken(req)))
+      if (req.method === 'POST' && path === '/wavedash/projects') {
+        const b = await readJson(req)
+        const result = await publisher.createProject({ game: str(b.game) ?? '', name: str(b.name) }, wavedashToken(req))
+        return result.ok ? send(res, 201, result) : send(res, 502, { error: result.detail })
+      }
       if (req.method === 'GET' && path === '/runs') return send(res, 200, { runs: await publisher.listRuns() })
 
       if (req.method === 'GET' && path === '/itch/status') return send(res, 200, await publisher.itchStatus(url.searchParams.get('target') ?? '', itchToken(req)))
