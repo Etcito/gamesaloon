@@ -70,6 +70,8 @@ A seated client that leaves with the relay's `bye` forfeits when the match is no
 
 ### Inactivity and lone draw
 
+The bye forfeit above, the inactivity void and the lone-draw loss are ranked-only rules. A `quick` (casual) match behaves as before: a `bye` does not forfeit, a lone `draw` report ends `void` (`no_report`), and there is no inactivity void.
+
 The tick decides two more endings for a match that is not already decided:
 
 - **Inactivity**: if neither seat has acted or reported for 600000 ms (10 minutes), the match is `void` with reason `inactivity`, no rating change and both locks released. The condition is `now - lastActivityAt >= 600000` together with no report inside that span (`firstReportAt` is null, or `now - firstReportAt >= 600000`). The check is inclusive: it fires at exactly 600000 ms, not at 599999.

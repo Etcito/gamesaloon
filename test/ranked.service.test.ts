@@ -277,3 +277,56 @@ test('outcome: recordMatch runs once per match_id, before onMatchEnd, and a repe
   assert.deepEqual(order, ids.flatMap((id) => [`recordMatch ${id}`, `onMatchEnd ${id}`]))
   assert.deepEqual(await store.recordMatch(calls[0]), { applied: false })
 })
+
+/** Both players queue `quick` (casual); seat A first. */
+async function casualPair(s: S) {
+  const a = s.add(), b = s.add()
+  a.frame(wavedash('a')); b.frame(wavedash('b'))
+  await flush()
+  a.frame({ t: 'match_queue', game: 'kekkai', queue: 'quick' })
+  await flush()
+  b.frame({ t: 'match_queue', game: 'kekkai', queue: 'quick' })
+  await flush()
+  assert.equal(a.conn.sent.find((m) => m.t === 'match')!.queue, 'quick')
+  return { a, b }
+}
+
+test('casual: a bye does not forfeit (same as main: no_report void after the session ends)', async () => {
+  const { records, hooks } = recording()
+  const s = setup(createMemoryStore(), hooks)
+  const p = await casualPair(s)
+  p.a.frame({ t: 'bye' })
+  await flush()
+  assert.ok(!records.some((r) => r.status === 'forfeit' || r.reason === 'left'))
+  assert.equal(ends(p.a).length + ends(p.b).length, 0)
+  await s.step(60_000)
+  assert.ok(records.every((r) => r.reason !== 'left' && r.reason !== 'lone_draw'))
+  assert.deepEqual(records.map((r) => [r.status, r.reason]), [['void', 'no_report']])
+})
+
+test('casual: a lone draw report is not penalised (void no_report)', async () => {
+  const { records, hooks } = recording()
+  const s = setup(createMemoryStore(), hooks)
+  const p = await casualPair(s)
+  report(p.a, 'draw')
+  await flush()
+  await s.step(60_000)
+  assert.deepEqual(records.map((r) => [r.status, r.reason, r.score_a]), [['void', 'no_report', null]])
+  assert.equal(ends(p.a)[0].outcome, null)
+  assert.equal(ends(p.b)[0].outcome, null)
+  assert.equal(ends(p.a)[0].rating, undefined)
+})
+
+test('casual: a stalled match is not voided for inactivity after 10+ minutes', async () => {
+  const { records, hooks } = recording()
+  const s = setup(createMemoryStore(), hooks)
+  const p = await casualPair(s)
+  await s.step(5_000)
+  p.a.frame({ t: 'act', a: { k: 'move' }, n: 1 })
+  await flush()
+  await s.step(600_000)
+  await s.step(60_000)
+  assert.equal(records.length, 0)
+  assert.equal(ends(p.a).length + ends(p.b).length, 0)
+  assert.equal(s.service.stats().matches, 1)
+})

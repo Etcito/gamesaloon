@@ -168,10 +168,11 @@ export class MatchService implements RelayExtension {
     this.byConn.set(seat.conn, match)
   }
 
-  /** A graceful bye: the leaver forfeits unless it already reported or the match is decided. */
+  /** A graceful bye: in a RANKED match the leaver forfeits unless it already reported or the match is decided. Casual matches are untouched. */
   seatLeft(seat: RelaySeatRef): void {
     const match = this.bySession.get(seat.session)
     if (!match || (seat.seat !== 0 && seat.seat !== 1)) return
+    if (match.queue !== 'ranked') return
     if (match.ending || match.reports[seat.seat] !== null) return
     void this.decide(match, 'forfeit', 'left', seat.seat === 0 ? 0 : 1)
   }
@@ -196,13 +197,13 @@ export class MatchService implements RelayExtension {
         if (!match.busy) this.end(match)
       } else if (this.checkForfeit(match)) {
         continue
-      } else if (nowMs - match.lastActivityAt >= INACTIVITY_MS &&
+      } else if (match.queue === 'ranked' && nowMs - match.lastActivityAt >= INACTIVITY_MS &&
         (match.firstReportAt === null || nowMs - match.firstReportAt >= INACTIVITY_MS)) {
         void this.decide(match, 'void', 'inactivity', null)
       } else if (match.firstReportAt !== null && match.firstReportAt + RESULT_WAIT_MS <= nowMs && match.reports.includes(null)) {
         const [r0, r1] = match.reports
         const lone = r0 === null ? r1 : r1 === null ? r0 : null
-        if (lone === 'draw') {
+        if (match.queue === 'ranked' && lone === 'draw') {
           // The lone draw reporter takes the loss; the opponent's rating is left untouched.
           const reporter = r0 === null ? 1 : 0
           void this.decide(match, 'complete', 'lone_draw', reporter === 0 ? 0 : 1, reporter === 0 ? 'a' : 'b')
