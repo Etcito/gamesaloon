@@ -19,7 +19,7 @@ class FakeConn {
 
 const METHODS = ['getOrCreateByIdentity', 'getPlayer', 'getRating', 'applyRankedResult', 'lockRanked',
   'unlockRanked', 'balance', 'credit', 'debit', 'unopenedPacks', 'addPacks', 'openPack', 'collection',
-  'leaderboard'] as const
+  'leaderboard', 'rankOf', 'setDisplayName', 'recordMatch', 'reapRankedLocks'] as const
 
 function wrapStore(over: (base: PlayerStore) => Partial<PlayerStore>): PlayerStore {
   const base = createMemoryStore()
@@ -341,7 +341,7 @@ test('a quick waiter gets a resident at 8000 ms', async () => {
   assert.ok(types.indexOf('match') >= 0 && types.indexOf('match') < types.indexOf('matched'))
   const m = a.conn.sent.find((x) => x.t === 'match')!
   assert.equal(m.seat, 0)
-  assert.deepEqual(m.opponent, { player_id: r.seat.player_id, display_name: 'Resi' })
+  assert.deepEqual(m.opponent, { player_id: r.seat.player_id, display_name: 'Resi', rating: 2500, tier: 'Platinum', placement: true, games: 0 })
   const rt = r.got.map((x) => x.t)
   assert.ok(rt.indexOf('match') >= 0 && rt.indexOf('match') < rt.indexOf('matched'))
   assert.equal(r.got.find((x) => x.t === 'match')!.seat, 1)

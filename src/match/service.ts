@@ -8,7 +8,10 @@ import { RELAY_PATH } from '../relay/protocol.ts'
 import type { RelayExtension, RelayHub, RelaySeatRef } from '../relay/hub.ts'
 import type { PlayerKind, PlayerStore, Provider, QueueName, RatingChange } from '../store/types.ts'
 import { singleStoreRouter } from '../store/games.ts'
-import type { GameRouter } from '../store/games.ts'
+import type { GameRouter, GameRouterHandle } from '../store/games.ts'
+import { tierOf } from '../store/elo.ts'
+import { sanitizeName } from '../names.ts'
+import { createLadder } from './ladder.ts'
 import { resolveIdentity } from './auth.ts'
 import { Matchmaker } from './matchmaker.ts'
 import type { MatchPair, Waiter } from './matchmaker.ts'
@@ -25,11 +28,23 @@ import { StripeBridgeError } from '../economy/stripe.ts'
 
 export const FORFEIT_MS = 90000
 export const RESULT_WAIT_MS = 60000
+/** A ranked match shorter than this counts at SHORT_WEIGHT. */
+export const RANKED_MIN_MS = 180000
+/** A match with no act and no report for this long is void (inactivity). */
+export const INACTIVITY_MS = 600000
+export const SHORT_WEIGHT = 0.5
+
+/** The ladder game when neither the router nor the auth message names one (the only Handshake ranked client). */
+const DEFAULT_LADDER_GAME = 'kekkai'
 
 export interface MatchDeps { now(): number; log(level: string, msg: string): void }
 
 /** `game` is the game the connection authenticated into (null with a single shared store: any game). */
-interface AuthedPlayer { player_id: string; display_name: string; provider: Provider; kind: PlayerKind; game: string | null }
+interface AuthedPlayer {
+  player_id: string; display_name: string; provider: Provider; kind: PlayerKind; game: string | null
+  /** The `game` of the auth message, kept for the ladder when the store is shared (`game` null). */
+  auth_game?: string
+}
 
 interface ActiveMatch {
   match_id: string
@@ -43,6 +58,7 @@ interface ActiveMatch {
   session: string
   reports: [Outcome | null, Outcome | null]
   started_at: number
+  lastActivityAt: number
   firstReportAt: number | null
   down: [number | null, number | null]
   /** Set once the end is decided; kept while a ranked rating cannot be applied yet. */
@@ -82,15 +98,40 @@ export class MatchService implements RelayExtension {
   private matches = new Map<string, ActiveMatch>()
   private bySession = new Map<string, ActiveMatch>()
   private byConn = new Map<string, ActiveMatch>()
+  private rankedRequireAccount: boolean
+  private ladder = createLadder({ now: () => this.deps.now() })
 
   /** `store` is one PlayerStore for every game, or a GameRouter (one store per game, chosen by the game of auth / match_queue). */
-  constructor(deps: MatchDeps, store: PlayerStore | GameRouter, hooks: HandshakeHooks = {}) {
+  constructor(deps: MatchDeps, store: PlayerStore | GameRouter, hooks: HandshakeHooks = {}, opts: { rankedRequireAccount?: boolean } = {}) {
     this.deps = deps
     this.router = 'resolve' in store ? store : singleStoreRouter(store)
     this.hooks = hooks
+    this.rankedRequireAccount = opts.rankedRequireAccount ?? false
   }
 
   attach(hub: RelayHub): void { this.hub = hub }
+
+  /** Clears the ranked locks left by a previous process on every store the router serves; resolves the count, never rejects. */
+  async start(): Promise<number> {
+    const handle = this.router as Partial<GameRouterHandle>
+    const stores = new Set<PlayerStore>()
+    if (typeof handle.backends === 'function') for (const b of handle.backends()) stores.add(b.store)
+    else {
+      const store = this.router.resolve(undefined)?.store
+      if (store) stores.add(store)
+    }
+    const active = new Set(this.matches.keys())
+    let total = 0
+    for (const store of stores) {
+      try {
+        total += await store.reapRankedLocks(active)
+      } catch (err) {
+        this.deps.log('error', `[match] store ${new StoreFailure(err).detail} reaping ranked locks`)
+      }
+    }
+    this.deps.log('info', `[match] reaped ${total} stale ranked locks`)
+    return total
+  }
 
   /** The store of a game already validated by auth / enqueue. */
   private storeFor(game: string): PlayerStore {
@@ -165,7 +206,8 @@ export class MatchService implements RelayExtension {
       else if (parsed.t === 'match_unqueue') {
         if (this.mm.remove(conn)) this.send(conn, { t: 'match_unqueued' })
         else this.error(conn, 'not_queued')
-      } else if (parsed.t === 'result') await this.result(conn, parsed.match_id, parsed.outcome)
+      } else if (parsed.t === 'ladder') await this.ladderPage(conn, parsed.page)
+      else if (parsed.t === 'result') await this.result(conn, parsed.match_id, parsed.outcome)
     } catch (err) {
       if (isEconomyMessage(parsed)) return this.economyError(conn, parsed, err)
       if (isOnlineMessage(parsed)) return this.onlineError(conn, parsed, err)
@@ -185,8 +227,20 @@ export class MatchService implements RelayExtension {
     if (!backend) return this.error(conn, 'bad_message')
     const res = await resolveIdentity(m.provider, m.token, m.name, this.hooks, this.deps.log, backend.game ?? m.game)
     if (!res.ok) return this.error(conn, res.code)
-    const { player } = await st(backend.store.getOrCreateByIdentity(res.identity, { display_name: res.display_name }))
-    const me = { player_id: player.player_id, display_name: player.display_name, provider: m.provider, kind: player.kind, game: backend.game }
+    const { player, created } = await st(backend.store.getOrCreateByIdentity(res.identity, { display_name: res.display_name }))
+    let displayName = player.display_name
+    const clean = sanitizeName(m.name, '')
+    if (!created && clean !== '' && clean !== displayName) {
+      try {
+        displayName = (await st(backend.store.setDisplayName(player.player_id, clean))).display_name
+      } catch {
+        this.deps.log('error', '[match] setDisplayName failed')
+      }
+    }
+    const me: AuthedPlayer = {
+      player_id: player.player_id, display_name: displayName, provider: m.provider, kind: player.kind, game: backend.game,
+      ...(m.game !== undefined ? { auth_game: m.game } : {}),
+    }
     this.authed.set(conn, me)
     this.watchEconomy(backend.economy, backend.game)
     this.send(conn, { t: 'authed', player_id: me.player_id, display_name: me.display_name, provider: me.provider })
@@ -374,6 +428,7 @@ export class MatchService implements RelayExtension {
     const me = this.authed.get(conn)
     if (!me) return this.error(conn, 'auth_required')
     if (me.kind === 'resident') return this.error(conn, 'resident_cannot_queue')
+    if (queue === 'ranked' && this.rankedRequireAccount && me.provider === 'guest') return this.error(conn, 'ranked_requires_account')
     if (me.game !== null && me.game !== game) return this.error(conn, 'bad_message')
     const backend = this.router.resolve(game)
     if (!backend) return this.error(conn, 'bad_message')
@@ -477,10 +532,15 @@ export class MatchService implements RelayExtension {
         this.pairing.delete(b.conn)
       }
     }
+    const store = this.storeFor(game)
+    const [ratingA, ratingB] = await Promise.all([store.getRating(a.player_id, game), store.getRating(b.player_id, game)])
     const authA = this.authed.get(a.conn), authB = this.authed.get(b.conn)
     if (!this.hub || !authA || !authB) return false
-    this.send(a.conn, { t: 'match', match_id: matchId, game, queue, seat: 0, opponent: { player_id: authB.player_id, display_name: authB.display_name } })
-    this.send(b.conn, { t: 'match', match_id: matchId, game, queue, seat: 1, opponent: { player_id: authA.player_id, display_name: authA.display_name } })
+    const opp = (p: AuthedPlayer, r: { rating: number; games: number; placement: boolean }) => ({
+      player_id: p.player_id, display_name: p.display_name, rating: r.rating, tier: tierOf(r.rating), placement: r.placement, games: r.games,
+    })
+    this.send(a.conn, { t: 'match', match_id: matchId, game, queue, seat: 0, opponent: opp(authB, ratingB) })
+    this.send(b.conn, { t: 'match', match_id: matchId, game, queue, seat: 1, opponent: opp(authA, ratingA) })
     const [seatA, seatB] = this.hub.pairInto(a.conn, b.conn, { holdMs: FORFEIT_MS })
     const match: ActiveMatch = {
       match_id: matchId, game, queue,
@@ -492,6 +552,7 @@ export class MatchService implements RelayExtension {
       session: seatA.session,
       reports: [null, null],
       started_at: this.deps.now(),
+      lastActivityAt: this.deps.now(),
       firstReportAt: null,
       down: [null, null],
       ending: null,
@@ -542,6 +603,24 @@ export class MatchService implements RelayExtension {
         this.deps.log('error', `[match] store unlock failed for ${matchId}`)
       })
     }
+  }
+
+  private async ladderPage(conn: string, page: number): Promise<void> {
+    const me = this.authed.get(conn)
+    if (!me) return this.error(conn, 'auth_required')
+    const backend = this.router.resolve(me.game ?? undefined)
+    if (!backend) return this.error(conn, 'bad_message')
+    // Ratings are stored under the match_queue game. With a router that is the backend's game (me.game, which
+    // enqueue enforces); with a single shared store me.game is null and enqueue accepts the client's game name, so
+    // use the game the client named at auth, else the only Handshake ranked client's game.
+    const game = me.game ?? me.auth_game ?? DEFAULT_LADDER_GAME
+    const ladder = await st(this.ladder.page(backend.store, game, page))
+    let mine = null
+    if (me.provider !== 'guest') {
+      const r = await st(this.ladder.me(backend.store, me.player_id, game))
+      mine = { rank: r.rank, rating: r.rating, tier: r.tier, placement: r.placement, games: r.games }
+    }
+    this.send(conn, { t: 'ladder', ...ladder, me: mine })
   }
 
   private async result(conn: string, matchId: string, outcome: Outcome): Promise<void> {

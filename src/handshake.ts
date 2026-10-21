@@ -48,8 +48,8 @@ export function createHandshake(options: HandshakeOptions = {}): Handshake {
     // Only creator backends carry maxRooms: owner games and single-owner mode keep the server-wide limit alone.
     hub.maxRoomsForGame = game => router.resolve(game)?.maxRooms?.()
   }
-  // MatchService's public constructor takes deps, store, then hooks.
-  const match = new MatchService(deps, options.store ?? createMemoryStore(), options.hooks ?? {})
+  // MatchService's public constructor takes deps, store, hooks, then options.
+  const match = new MatchService(deps, options.store ?? createMemoryStore(), options.hooks ?? {}, { rankedRequireAccount: cfg.rankedRequireAccount })
   const relayHub = new RelayHub(deps, match)
   match.attach(relayHub)
   const relay = relayEndpoint(relayHub)
@@ -90,6 +90,8 @@ export function createHandshake(options: HandshakeOptions = {}): Handshake {
         throw e
       }
       port = transport.port
+      // Clears ranked locks a previous process left behind; never fails the boot.
+      await match.start().catch(() => 0)
       return { port }
     },
     tick(nowMs: number) {

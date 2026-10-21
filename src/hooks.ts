@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 import { createHash } from 'node:crypto'
+import { sanitizeName } from './names.ts'
 import type { Provider, QueueName, RatingChange } from './store/types.ts'
 
 export type Outcome = 'win' | 'loss' | 'draw'
@@ -57,10 +58,7 @@ export function guestIdentity(token: string, name?: string): VerifiedIdentity | 
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(token)) return null
 
   const external_id = createHash('sha256').update(token).digest('hex')
-  const trimmedName = name?.trim()
-  const display_name = trimmedName && trimmedName.length >= 3 && trimmedName.length <= 16
-    ? trimmedName
-    : 'Guest-' + external_id.slice(0, 4).toUpperCase()
+  const display_name = sanitizeName(name, 'Guest-' + external_id.slice(0, 4).toUpperCase())
 
   return { provider: 'guest', external_id, display_name }
 }
