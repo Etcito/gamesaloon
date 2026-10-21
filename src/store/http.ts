@@ -6,15 +6,16 @@
 // A per-key mutex serialises the check-then-insert steps inside this process (one Handshake instance).
 
 import { randomUUID } from 'node:crypto'
+import { sanitizeName } from '../names.ts'
 import { StoreError } from './errors.ts'
 import { DEFAULT_ELO, nextRating, tierOf } from './elo.ts'
 import type { EloParams } from './elo.ts'
 import type { Filter, Row, TableApi } from './tables.ts'
-import type { OpenPackResult, PacksResult, Player, PlayerStore, RankedResult, WalletResult } from './types.ts'
+import type { OpenPackResult, PacksResult, Player, PlayerStore, RankedResult, RatingChange, WalletResult } from './types.ts'
 
 const PAGE = 500
 const LEADERBOARD_PAGE_SIZE = 50
-const T = { players: 'etc_players', ids: 'etc_identities', locks: 'etc_locks', results: 'etc_ranked_results', events: 'etc_rating_events', ledger: 'etc_ledger' }
+const T = { players: 'etc_players', ids: 'etc_identities', locks: 'etc_locks', results: 'etc_ranked_results', events: 'etc_rating_events', ledger: 'etc_ledger', matches: 'etc_matches' }
 
 function stringArgument(value: unknown, name: string, max = Infinity): asserts value is string {
   if (typeof value !== 'string' || value.length < 1 || value.length > max) throw new StoreError('bad_argument', `Invalid ${name}`)
@@ -142,10 +143,9 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
         if (!ident) throw new Error('identity claim failed')
         const playerId = ident.player_id as string
         if (!(await one(T.players, [{ field: 'player_id', op: 'eq', value: playerId }]))) {
-          const name = typeof init?.display_name === 'string' ? init.display_name.trim() : ''
           await api.insert(T.players, {
             player_id: playerId, kind, created_at: now(),
-            display_name: name.length >= 3 && name.length <= 16 ? name : `Player-${playerId.slice(0, 4)}`,
+            display_name: sanitizeName(init?.display_name, `Player-${playerId.slice(0, 4)}`),
           })
         }
         return { player: (await loadPlayer(playerId))!, created }
@@ -166,12 +166,13 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
 
     async applyRankedResult(outcome) {
       if (!outcome) throw new StoreError('bad_argument', 'Invalid ranked outcome')
-      const { match_id, game, a, b, score_a } = outcome
+      const { match_id, game, a, b, score_a, weight = 1, only } = outcome
       stringArgument(match_id, 'match id')
       stringArgument(game, 'game', 64)
       stringArgument(a, 'player a')
       stringArgument(b, 'player b')
       if (a === b || (score_a !== 0 && score_a !== 0.5 && score_a !== 1)) throw new StoreError('bad_argument', 'Invalid ranked players or score')
+      if ((weight !== 1 && weight !== 0.5) || (only !== undefined && only !== 'a' && only !== 'b')) throw new StoreError('bad_argument', 'Invalid ranked weight or side')
       const stored = async (): Promise<RankedResult | undefined> => {
         const row = await one(T.results, [{ field: 'match_id', op: 'eq', value: match_id }])
         return row ? { ...JSON.parse(row.result_json as string), applied: false } : undefined
@@ -185,16 +186,16 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
         const again = await stored()
         if (again) return again
         const ba = await ratingOf(a, game), bb = await ratingOf(b, game)
-        const aa = { rating: nextRating(ba.rating, bb.rating, score_a, ba.games, params), games: ba.games + 1 }
-        const ab = { rating: nextRating(bb.rating, ba.rating, (1 - score_a) as 0 | 0.5 | 1, bb.games, params), games: bb.games + 1 }
-        const result: RankedResult = {
-          match_id, game, applied: true,
-          a: { player_id: a, before: ba.rating, after: aa.rating, games: aa.games, placement: aa.games < params.placementGames },
-          b: { player_id: b, before: bb.rating, after: ab.rating, games: ab.games, placement: ab.games < params.placementGames },
-        }
+        // With `only`, the other side keeps its rating and games (before = after) and gets no rating event.
+        const aa = only === 'b' ? ba : { rating: nextRating(ba.rating, bb.rating, score_a, ba.games, params, weight), games: ba.games + 1 }
+        const ab = only === 'a' ? bb : { rating: nextRating(bb.rating, ba.rating, (1 - score_a) as 0 | 0.5 | 1, bb.games, params, weight), games: bb.games + 1 }
+        const change = (player_id: string, before: { rating: number }, after: { rating: number; games: number }): RatingChange =>
+          ({ player_id, before: before.rating, after: after.rating, games: after.games, placement: after.games < params.placementGames })
+        const result: RankedResult = { match_id, game, applied: true, a: change(a, ba, aa), b: change(b, bb, ab) }
         const claimed = await api.insert(T.results, { match_id, result_json: JSON.stringify(result) })
         if (claimed === 'conflict') return (await stored())!
-        for (const c of [result.a, result.b]) {
+        const changed = only === 'a' ? [result.a] : only === 'b' ? [result.b] : [result.a, result.b]
+        for (const c of changed) {
           await api.insert(T.events, { ev_key: `${match_id}\u001f${c.player_id}`, player_id: c.player_id, game, match_id, r_before: c.before, r_after: c.after, games: c.games })
         }
         for (const id of [a, b]) {
@@ -313,6 +314,65 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
       return {
         game, page, page_size: LEADERBOARD_PAGE_SIZE, total: entries.length,
         entries: entries.slice(start, start + LEADERBOARD_PAGE_SIZE).map((e, i) => ({ rank: start + i + 1, ...e })),
+      }
+    },
+
+    async rankOf(playerId, game) {
+      await requirePlayer(playerId)
+      stringArgument(game, 'game', 64)
+      const events = await all(T.events, [{ field: 'game', op: 'eq', value: game }], [{ field: 'id', dir: 'desc' }])
+      const latest = new Map<string, { rating: number; games: number }>()
+      for (const e of events) if (!latest.has(e.player_id as string)) latest.set(e.player_id as string, { rating: e.r_after as number, games: e.games as number })
+      const placementGames = elo().placementGames
+      const mine = latest.get(playerId) ?? { rating: elo().start, games: 0 }
+      const placement = mine.games < placementGames
+      let rank: number | null = null
+      if (!placement) {
+        rank = 1
+        for (const [id, r] of latest) {
+          if (id === playerId || r.games < placementGames) continue
+          if (r.rating > mine.rating || (r.rating === mine.rating && id < playerId)) rank++
+        }
+      }
+      return { rank, rating: mine.rating, games: mine.games, placement, tier: tierOf(mine.rating) }
+    },
+
+    async setDisplayName(playerId, name) {
+      stringArgument(playerId, 'player id')
+      if (typeof name !== 'string' || name.length === 0 || sanitizeName(name, '') !== name) throw new StoreError('bad_argument', 'Invalid display name')
+      return locked([`p:${playerId}`], async () => {
+        const row = await one(T.players, [{ field: 'player_id', op: 'eq', value: playerId }])
+        if (!row) throw new StoreError('not_found', 'Player not found')
+        await api.update(T.players, row.id as number, { display_name: name })
+        return (await loadPlayer(playerId))!
+      })
+    },
+
+    async recordMatch(record) {
+      if (!record) throw new StoreError('bad_argument', 'Invalid match record')
+      stringArgument(record.match_id, 'match id')
+      const r = await api.insert(T.matches, {
+        match_id: record.match_id, game: record.game, queue: record.queue, status: record.status,
+        reason: record.reason, ended_at: record.ended_at, record: JSON.stringify(record),
+      })
+      return { applied: r !== 'conflict' }
+    },
+
+    async reapRankedLocks(active) {
+      let count = 0
+      // Cleared rows leave the not_null filter, so the next page starts after the rows kept on this one.
+      for (let kept = 0; ;) {
+        const page = Math.floor(kept / PAGE) + 1
+        const rows = await api.query(T.locks, { filters: [{ field: 'open_key', op: 'not_null' }], sort: [{ field: 'id', dir: 'asc' }], page, size: PAGE })
+        const offset = kept % PAGE
+        for (const lock of rows.slice(offset)) {
+          if (active.has(lock.match_id as string)) { kept++; continue }
+          await locked([`p:${lock.player_id as string}`], async () => {
+            const open = await one(T.locks, [{ field: 'open_key', op: 'eq', value: lock.player_id }])
+            if (open && open.id === lock.id) { await api.update(T.locks, lock.id as number, { open_key: null }); count++ }
+          })
+        }
+        if (rows.length < PAGE) return count
       }
     },
   }

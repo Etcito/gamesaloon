@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 // Table access used by the HTTP player store: the small subset of the remote generic table API
 // (POST /api/tables/{t}, POST /api/tables/{t}/query, PATCH /api/tables/{t}/{id}) the store needs.
-// Everything the store writes is append-only; the only update is closing a ranked lock.
+// Everything the store writes is append-only; the only updates are closing a ranked lock and renaming a player.
 
 export type Row = Record<string, unknown>
 export type Filter =
@@ -30,6 +30,7 @@ export const ETCITO_TABLES: Record<string, { columns: string[]; unique: string[]
   etc_identities: { columns: ["ident_key", "player_id"], unique: [["ident_key"]] },
   etc_locks: { columns: ["player_id", "match_id", "open_key"], unique: [["open_key"]] },
   etc_ranked_results: { columns: ["match_id", "result_json"], unique: [["match_id"]] },
+  etc_matches: { columns: ["match_id", "game", "queue", "status", "reason", "ended_at", "record"], unique: [["match_id"]] },
   etc_rating_events: { columns: ["ev_key", "player_id", "game", "match_id", "r_before", "r_after", "games"], unique: [["ev_key"]] },
   etc_ledger: { columns: ["tx_id", "player_id", "op", "game", "coin_delta", "pack_delta", "params", "result_json", "created_at"], unique: [["tx_id"]] },
   etc_game: { columns: ["code", "name", "repo_url", "repo_branch", "handshake_game", "elo_start", "elo_k_floor", "placement_games", "queues"], unique: [["code"]] },

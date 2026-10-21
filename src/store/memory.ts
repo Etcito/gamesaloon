@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 import { randomUUID } from 'node:crypto'
+import { sanitizeName } from '../names.ts'
+import type { MatchRecord } from '../hooks.ts'
 import { StoreError } from './errors.ts'
 import { nextRating, PLACEMENT_GAMES, START_RATING, tierOf } from './elo.ts'
-import type { OpenPackResult, PacksResult, Player, PlayerStore, RankedResult, WalletResult } from './types.ts'
+import type { OpenPackResult, PacksResult, Player, PlayerStore, RankedResult, RatingChange, WalletResult } from './types.ts'
 
 const LEADERBOARD_PAGE_SIZE = 50
 type StoredRating = { rating: number; games: number }
@@ -47,6 +49,7 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
   const packs = new Map<string, number>()
   const collections = new Map<string, Record<string, number>>()
   const transactions = new Map<string, Transaction>()
+  const matches = new Map<string, MatchRecord>()
   const key = (player: string, game: string) => `${player}\u0000${game}`
 
   function requirePlayer(playerId: string): Player {
@@ -101,10 +104,9 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
       const kind = init?.kind ?? 'human'
       if (kind !== 'human' && kind !== 'resident') throw new StoreError('bad_argument', 'Invalid player kind')
       const playerId = uuid()
-      const name = typeof init?.display_name === 'string' ? init.display_name.trim() : ''
       const player: Player = {
         player_id: playerId,
-        display_name: name.length >= 3 && name.length <= 16 ? name : `Player-${playerId.slice(0, 4)}`,
+        display_name: sanitizeName(init?.display_name, `Player-${playerId.slice(0, 4)}`),
         kind,
         identities: [{ provider: identity.provider, external_id: identity.external_id }],
         active_ranked_match: null,
@@ -130,7 +132,7 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
 
     async applyRankedResult(outcome) {
       if (!outcome) throw new StoreError('bad_argument', 'Invalid ranked outcome')
-      const { match_id, game, a, b, score_a } = outcome
+      const { match_id, game, a, b, score_a, weight = 1, only } = outcome
       stringArgument(match_id, 'match id')
       stringArgument(game, 'game', 64)
       stringArgument(a, 'player a')
@@ -138,24 +140,28 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
       if (a === b || (score_a !== 0 && score_a !== 0.5 && score_a !== 1)) {
         throw new StoreError('bad_argument', 'Invalid ranked players or score')
       }
+      if ((weight !== 1 && weight !== 0.5) || (only !== undefined && only !== 'a' && only !== 'b')) {
+        throw new StoreError('bad_argument', 'Invalid ranked weight or side')
+      }
       const previous = rankedResults.get(match_id)
       if (previous) return { ...structuredClone(previous), applied: false }
       const playerA = requirePlayer(a)
       const playerB = requirePlayer(b)
       const beforeA = ratingFor(a, game)
       const beforeB = ratingFor(b, game)
-      const afterA = {
-        rating: nextRating(beforeA.rating, beforeB.rating, score_a, beforeA.games),
+      // With `only`, the other side keeps its rating and games (before = after).
+      const afterA = only === 'b' ? beforeA : {
+        rating: nextRating(beforeA.rating, beforeB.rating, score_a, beforeA.games, undefined, weight),
         games: beforeA.games + 1,
       }
-      const afterB = {
-        rating: nextRating(beforeB.rating, beforeA.rating, (1 - score_a) as 0 | 0.5 | 1, beforeB.games),
+      const afterB = only === 'a' ? beforeB : {
+        rating: nextRating(beforeB.rating, beforeA.rating, (1 - score_a) as 0 | 0.5 | 1, beforeB.games, undefined, weight),
         games: beforeB.games + 1,
       }
+      const change = (player_id: string, before: StoredRating, after: StoredRating): RatingChange =>
+        ({ player_id, before: before.rating, after: after.rating, games: after.games, placement: after.games < PLACEMENT_GAMES })
       const result: RankedResult = {
-        match_id, game, applied: true,
-        a: { player_id: a, before: beforeA.rating, after: afterA.rating, games: afterA.games, placement: afterA.games < PLACEMENT_GAMES },
-        b: { player_id: b, before: beforeB.rating, after: afterB.rating, games: afterB.games, placement: afterB.games < PLACEMENT_GAMES },
+        match_id, game, applied: true, a: change(a, beforeA, afterA), b: change(b, beforeB, afterB),
       }
       ratings.set(key(a, game), afterA)
       ratings.set(key(b, game), afterB)
@@ -274,6 +280,51 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
         game, page, page_size: LEADERBOARD_PAGE_SIZE, total: entries.length,
         entries: entries.slice(start, start + LEADERBOARD_PAGE_SIZE).map((entry, i) => ({ rank: start + i + 1, ...entry })),
       }
+    },
+
+    async rankOf(playerId, game) {
+      requirePlayer(playerId)
+      stringArgument(game, 'game', 64)
+      const mine = ratingFor(playerId, game)
+      const placement = mine.games < PLACEMENT_GAMES
+      let rank: number | null = null
+      if (!placement) {
+        rank = 1
+        for (const player of players.values()) {
+          const rating = ratings.get(key(player.player_id, game))
+          if (!rating || rating.games < PLACEMENT_GAMES || player.player_id === playerId) continue
+          if (rating.rating > mine.rating || (rating.rating === mine.rating && player.player_id < playerId)) rank++
+        }
+      }
+      return { rank, rating: mine.rating, games: mine.games, placement, tier: tierOf(mine.rating) }
+    },
+
+    async setDisplayName(playerId, name) {
+      const player = requirePlayer(playerId)
+      if (typeof name !== 'string' || name.length === 0 || sanitizeName(name, '') !== name) {
+        throw new StoreError('bad_argument', 'Invalid display name')
+      }
+      player.display_name = name
+      return copyPlayer(player)
+    },
+
+    async recordMatch(record) {
+      if (!record) throw new StoreError('bad_argument', 'Invalid match record')
+      stringArgument(record.match_id, 'match id')
+      if (matches.has(record.match_id)) return { applied: false }
+      matches.set(record.match_id, structuredClone(record))
+      return { applied: true }
+    },
+
+    async reapRankedLocks(active) {
+      let count = 0
+      for (const player of players.values()) {
+        if (player.active_ranked_match !== null && !active.has(player.active_ranked_match)) {
+          player.active_ranked_match = null
+          count++
+        }
+      }
+      return count
     },
   }
 }

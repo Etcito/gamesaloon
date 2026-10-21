@@ -18,8 +18,8 @@ export function kFactor(gamesBefore: number, params: EloParams = DEFAULT_ELO): n
   return gamesBefore < params.placementGames ? 160 : Math.max(params.kFloor, 160 - 16 * gamesBefore)
 }
 
-export function nextRating(r: number, rOpp: number, score: 0 | 0.5 | 1, gamesBefore: number, params: EloParams = DEFAULT_ELO): number {
-  return Math.max(0, Math.round(r + kFactor(gamesBefore, params) * (score - expectedScore(r, rOpp))))
+export function nextRating(r: number, rOpp: number, score: 0 | 0.5 | 1, gamesBefore: number, params: EloParams = DEFAULT_ELO, weight = 1): number {
+  return Math.max(0, Math.round(r + weight * kFactor(gamesBefore, params) * (score - expectedScore(r, rOpp))))
 }
 
 export const TIERS: readonly { name: TierName; min: number }[] = [
