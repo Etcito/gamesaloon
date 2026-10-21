@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { playerStoreContract } from '../src/store/contract.ts'
 import { createHttpPlayerStore } from '../src/store/http.ts'
 import { createCrmTableApi, createMemoryTableApi } from '../src/store/tables.ts'
+import type { MatchRecord } from '../src/hooks.ts'
 
 playerStoreContract('http store (fake tenant)', () => createHttpPlayerStore(createMemoryTableApi()))
 
@@ -39,6 +40,31 @@ describe('http store specifics', () => {
     const rs = await Promise.all([1, 2, 3].map(() => store.getOrCreateByIdentity({ provider: 'wavedash', external_id: 'wd-1' })))
     assert.equal(new Set(rs.map(r => r.player.player_id)).size, 1)
     assert.equal(rs.filter(r => r.created).length, 1)
+  })
+  test('recordMatch writes exactly one etc_matches row with the record JSON', async () => {
+    const api = createMemoryTableApi()
+    const store = createHttpPlayerStore(api)
+    const record = {
+      match_id: 'rec-http', game: 'game', queue: 'ranked', players: ['a', 'b'], residents: [false, false],
+      status: 'forfeit', reason: 'left', reports: [null, null], score_a: 1, ratings: null, started_at: 1, ended_at: 2,
+    } as unknown as MatchRecord
+    assert.deepEqual(await store.recordMatch(record), { applied: true })
+    assert.deepEqual(await store.recordMatch({ ...record, status: 'void' }), { applied: false })
+    const rows = api.rows('etc_matches')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.match_id, 'rec-http')
+    assert.equal(rows[0]!.status, 'forfeit')
+    assert.deepEqual(JSON.parse(rows[0]!.record as string), record)
+  })
+  test('reapRankedLocks clears 501 stale locks across the 500 batch boundary', async () => {
+    const api = createMemoryTableApi()
+    const store = createHttpPlayerStore(api)
+    for (let i = 0; i < 501; i++) {
+      const { player } = await store.getOrCreateByIdentity({ provider: 'guest', external_id: `stale-${i}` })
+      await api.insert('etc_locks', { player_id: player.player_id, match_id: `stale-m-${i}`, open_key: player.player_id })
+    }
+    assert.equal(await store.reapRankedLocks(new Set()), 501)
+    assert.equal(api.rows('etc_locks').filter(r => r.open_key !== null && r.open_key !== undefined).length, 0)
   })
 })
 

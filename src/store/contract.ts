@@ -4,6 +4,7 @@ import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { StoreError } from './errors.ts'
 import { nextRating, tierOf } from './elo.ts'
+import type { MatchRecord } from '../hooks.ts'
 import type { PlayerStore } from './types.ts'
 
 type StoreFactory = () => PlayerStore | Promise<PlayerStore>
@@ -15,6 +16,14 @@ async function rejectsWith(p: Promise<unknown>, code: StoreError['code']): Promi
 
 async function newPlayer(store: PlayerStore, id: string) {
   return (await store.getOrCreateByIdentity({ provider: 'guest', external_id: id })).player
+}
+
+function matchRecord(matchId: string, a: string, b: string): MatchRecord {
+  return {
+    match_id: matchId, game: 'game', queue: 'ranked', players: [a, b], residents: [false, false],
+    status: 'complete', reason: 'agreed', reports: ['win', 'loss'], score_a: 1, ratings: null,
+    started_at: 1000, ended_at: 2000,
+  } as MatchRecord
 }
 
 async function play(store: PlayerStore, a: string, b: string, score: 0 | 0.5 | 1, matchId: string) {
@@ -38,6 +47,10 @@ export function playerStoreContract(label: string, makeStore: StoreFactory): voi
       ['openPack', s => s.openPack('unknown', 'game', () => ['card'], 'tx'), 'not_found'],
       ['collection', s => s.collection('unknown', 'game'), 'not_found'],
       ['leaderboard', s => s.leaderboard('game', 0), 'bad_argument'],
+      ['rankOf', s => s.rankOf('unknown', 'game'), 'not_found'],
+      ['setDisplayName', s => s.setDisplayName('unknown', 'Renamed'), 'not_found'],
+      ['recordMatch', s => s.recordMatch(matchRecord('m', 'unknown-a', 'unknown-b')), 'resolve'],
+      ['reapRankedLocks', s => s.reapRankedLocks(new Set()), 'resolve'],
     ]
 
     for (const [method, call, expected] of promiseCases) {
@@ -197,6 +210,83 @@ export function playerStoreContract(label: string, makeStore: StoreFactory): voi
       assert.equal(results.filter(Boolean).length, 1)
       const winner = results.findIndex(Boolean)
       assert.equal((await store.getPlayer(player.player_id))?.active_ranked_match, `match-${winner}`)
+    })
+
+    test('weight 0.5 halves the rating change for both sides', async () => {
+      const store = await makeStore()
+      const a = await newPlayer(store, 'a')
+      const b = await newPlayer(store, 'b')
+      const result = await store.applyRankedResult({ match_id: 'half', game: 'game', a: a.player_id, b: b.player_id, score_a: 1, weight: 0.5 })
+      assert.deepEqual([result.a.after, result.b.after], [2540, 2460])
+      assert.deepEqual([result.a.games, result.b.games], [1, 1])
+      assert.equal((await store.getRating(a.player_id, 'game')).rating, 2540)
+      assert.equal((await store.getRating(b.player_id, 'game')).rating, 2460)
+    })
+
+    test('only a changes one side and leaves the other untouched', async () => {
+      const store = await makeStore()
+      const a = await newPlayer(store, 'a')
+      const b = await newPlayer(store, 'b')
+      const result = await store.applyRankedResult({ match_id: 'lone', game: 'game', a: a.player_id, b: b.player_id, score_a: 0, only: 'a' })
+      assert.deepEqual([result.a.before, result.a.after, result.a.games], [2500, 2420, 1])
+      assert.deepEqual([result.b.before, result.b.after], [2500, 2500])
+      assert.deepEqual(await store.getRating(a.player_id, 'game'), { game: 'game', rating: 2420, games: 1, placement: true })
+      assert.deepEqual(await store.getRating(b.player_id, 'game'), { game: 'game', rating: 2500, games: 0, placement: true })
+    })
+
+    test('rankOf matches the leaderboard rank and is null in placement', async () => {
+      const store = await makeStore()
+      const players = [await newPlayer(store, 'p1'), await newPlayer(store, 'p2'), await newPlayer(store, 'p3')]
+      const [p1, p2, p3] = players.map(p => p.player_id) as [string, string, string]
+      for (let i = 0; i < 5; i++) {
+        await play(store, p1, p2, 1, `a-${i}`)
+        await play(store, p2, p3, 1, `b-${i}`)
+        await play(store, p1, p3, 1, `c-${i}`)
+      }
+      const page = await store.leaderboard('game', 1)
+      assert.equal(page.total, 3)
+      assert.equal(new Set(page.entries.map(e => e.rating)).size, 3)
+      for (const entry of page.entries) {
+        const info = await store.rankOf(entry.player_id, 'game')
+        const rating = await store.getRating(entry.player_id, 'game')
+        assert.deepEqual(info, { rank: entry.rank, rating: rating.rating, games: rating.games, placement: false, tier: entry.tier })
+      }
+      const fresh = await newPlayer(store, 'fresh')
+      const info = await store.rankOf(fresh.player_id, 'game')
+      assert.equal(info.rank, null)
+      assert.equal(info.placement, true)
+    })
+
+    test('setDisplayName round-trips and rejects dirty names', async () => {
+      const store = await makeStore()
+      const player = await newPlayer(store, 'rename')
+      const renamed = await store.setDisplayName(player.player_id, 'Renamed')
+      assert.equal(renamed.display_name, 'Renamed')
+      assert.equal((await store.getPlayer(player.player_id))?.display_name, 'Renamed')
+      for (const dirty of ['Bad\u200Bname', ' x ', '']) {
+        await rejectsWith(store.setDisplayName(player.player_id, dirty), 'bad_argument')
+        assert.equal((await store.getPlayer(player.player_id))?.display_name, 'Renamed')
+      }
+    })
+
+    test('recordMatch is idempotent by match id', async () => {
+      const store = await makeStore()
+      const a = await newPlayer(store, 'a')
+      const b = await newPlayer(store, 'b')
+      assert.deepEqual(await store.recordMatch(matchRecord('rec-1', a.player_id, b.player_id)), { applied: true })
+      assert.deepEqual(await store.recordMatch(matchRecord('rec-1', a.player_id, b.player_id)), { applied: false })
+    })
+
+    test('reapRankedLocks clears stale locks and keeps active ones', async () => {
+      const store = await makeStore()
+      const [p1, p2, p3] = [await newPlayer(store, 'p1'), await newPlayer(store, 'p2'), await newPlayer(store, 'p3')]
+      assert.equal(await store.lockRanked(p1.player_id, 's1'), true)
+      assert.equal(await store.lockRanked(p2.player_id, 's2'), true)
+      assert.equal(await store.lockRanked(p3.player_id, 'live'), true)
+      assert.equal(await store.reapRankedLocks(new Set(['live'])), 2)
+      assert.equal((await store.getPlayer(p1.player_id))?.active_ranked_match, null)
+      assert.equal((await store.getPlayer(p2.player_id))?.active_ranked_match, null)
+      assert.equal((await store.getPlayer(p3.player_id))?.active_ranked_match, 'live')
     })
 
     // part 2: wallet, packs, collection, leaderboard, copies
