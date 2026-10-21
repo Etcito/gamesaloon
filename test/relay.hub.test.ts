@@ -200,3 +200,46 @@ test('endSession notifies like relay.mjs and seatOf becomes null', () => {
   assert.equal(s.hub.stats().sessions, 0)
   assert.deepEqual(r.calls.filter((c) => c.kind === 'sessionEnded').map((c) => c.args), [[ref.session]])
 })
+
+test('graceful bye calls seatLeft once, before the opponent gets opp_left', () => {
+  const order: string[] = []
+  const seats: RelaySeatRef[] = []
+  const r = recorder()
+  const s = setup({ ...r.ext, seatLeft: (seat) => { order.push('seatLeft'); seats.push(seat) } })
+  const { a, b } = quickPair(s)
+  const ref = s.hub.seatOf(a.id)!
+  const send = b.conn.send.bind(b.conn)
+  b.conn.send = (text: string) => { order.push(JSON.parse(text).t); send(text) }
+  s.hub.message(a.id, JSON.stringify({ t: 'bye' }))
+  s.hub.message(a.id, JSON.stringify({ t: 'bye' }))
+  assert.deepEqual(seats, [{ session: ref.session, seat: 0, conn: a.id }])
+  assert.deepEqual(order, ['seatLeft', 'opp_left'])
+  assert.equal(s.hub.stats().sessions, 0)
+})
+
+test('an accepted act calls seatActed with the deps clock; a duplicate n does not', () => {
+  const acted: { seat: RelaySeatRef; now: number }[] = []
+  const r = recorder()
+  const s = setup({ ...r.ext, seatActed: (seat, now) => { acted.push({ seat, now }) } })
+  const { a } = quickPair(s)
+  const ref = s.hub.seatOf(a.id)!
+  s.clock.t += 1234
+  s.hub.message(a.id, JSON.stringify({ t: 'act', a: { x: 1 }, n: 1 }))
+  assert.deepEqual(acted, [{ seat: { session: ref.session, seat: 0, conn: a.id }, now: s.clock.t }])
+  s.hub.message(a.id, JSON.stringify({ t: 'act', a: { x: 1 }, n: 1 }))
+  assert.deepEqual(a.conn.sent.at(-1), { t: 'ack', n: 1 })
+  assert.equal(acted.length, 1)
+})
+
+test('a non-graceful disconnect does not call seatLeft', () => {
+  let left = 0
+  const r = recorder()
+  const s = setup({ ...r.ext, seatLeft: () => { left++ } })
+  const { a, b } = quickPair(s)
+  s.hub.disconnect(b.id)
+  assert.equal(a.conn.types().at(-1), 'opp_dropped')
+  s.clock.t += RESUME_GRACE_MS
+  s.hub.tick(s.clock.t)
+  assert.equal(a.conn.types().at(-1), 'opp_left')
+  assert.equal(left, 0)
+})

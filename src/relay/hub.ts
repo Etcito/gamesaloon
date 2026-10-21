@@ -18,6 +18,8 @@ export interface RelayExtension {
   seatResumed(seat: RelaySeatRef): void
   sessionEnded(session: string): void
   tick(nowMs: number): void
+  seatLeft?(seat: RelaySeatRef): void
+  seatActed?(seat: RelaySeatRef, now: number): void
 }
 
 interface Client {
@@ -225,6 +227,7 @@ export class RelayHub {
         const n = msg.n ?? room.recv[side] + 1
         if (n <= room.recv[side]) return this.send(c.id, { t: 'ack', n })
         room.recv[side] = n
+        this.ext?.seatActed?.({ session: c.roomCode as string, seat: side, conn: c.id }, this.deps.now())
         room.log.push({ side, n, a: msg.a })
         if (room.log.length > (room.cadence ? MAX_LOG_ACTS_CADENCE : MAX_LOG_ACTS)) room.log.shift()
         this.send(c.id, { t: 'ack', n })
@@ -414,6 +417,7 @@ export class RelayHub {
         this.broadcast(room, msg, side)
         continue
       }
+      if (graceful && !room.gone[side]) this.ext?.seatLeft?.({ session: code, seat: side, conn: c.id })
       this.endSeat(code, room, side)
     }
   }
