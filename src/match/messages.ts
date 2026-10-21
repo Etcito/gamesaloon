@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 import type { Outcome } from '../hooks.ts'
-import type { Provider, QueueName } from '../store/types.ts'
+import type { Provider, QueueName, TierName } from '../store/types.ts'
 import { RELAY_CLIENT_TYPES, RELAY_SERVER_TYPES, RELAY_TYPE_FIELD } from '../relay/protocol.ts'
 import { ONLINE_CLIENT_TYPES, ONLINE_ERROR_CODES, ONLINE_SERVER_TYPES, isOnlineClientType, parseOnlineMessage } from '../online/messages.ts'
 import type { OnlineClientMessage } from '../online/messages.ts'
 
 export const ECONOMY_CLIENT_TYPES = ['eco_get', 'eco_products', 'eco_reward', 'eco_buy', 'eco_open', 'eco_wavedash', 'eco_stripe'] as const
 export const ECONOMY_SERVER_TYPES = ['eco_state', 'eco_products', 'eco_reward', 'eco_bought', 'eco_opened', 'eco_purchase', 'eco_checkout'] as const
-export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
-export const MATCH_SERVER_TYPES = ['authed', 'match_queued', 'match_unqueued', 'match', 'result_ack', 'match_end', ...ECONOMY_SERVER_TYPES, ...ONLINE_SERVER_TYPES] as const
+export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', 'ladder', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
+export const MATCH_SERVER_TYPES = ['authed', 'match_queued', 'match_unqueued', 'match', 'result_ack', 'match_end', 'ladder', ...ECONOMY_SERVER_TYPES, ...ONLINE_SERVER_TYPES] as const
 export const MATCH_ERROR_CODES = [
   'auth_required', 'already_authed', 'auth_failed', 'auth_unavailable',
   'already_queued', 'not_queued', 'in_match', 'ranked_busy',
   'resident_cannot_queue', 'bad_queue', 'unknown_match', 'already_reported',
-  'store_unavailable',
+  'store_unavailable', 'ranked_requires_account',
   'economy_unavailable', 'insufficient_funds', 'no_packs', 'tx_conflict', 'unknown_product', 'unknown_reward', 'unknown_pack',
   'purchase_refunded', 'purchases_blocked', 'bad_receipt', 'receipt_mismatch', 'not_production', 'bad_return_url', 'payment_unavailable',
   ...ONLINE_ERROR_CODES,
@@ -29,11 +29,16 @@ export type MatchClientType = typeof MATCH_CLIENT_TYPES[number]
 export type MatchServerType = typeof MATCH_SERVER_TYPES[number]
 export type MatchErrorCode = typeof MATCH_ERROR_CODES[number]
 
+export type MatchEndReason =
+  | 'agreed' | 'disagreement' | 'no_report' | 'disconnect' | 'both_disconnected'
+  | 'left' | 'lone_draw' | 'inactivity'
+
 export type MatchClientMessage =
   | { t: 'auth'; provider: Provider; token: string; name?: string; game?: string }
   | { t: 'match_queue'; game: string; queue: QueueName }
   | { t: 'match_unqueue' }
   | { t: 'result'; match_id: string; outcome: Outcome }
+  | { t: 'ladder'; page: number }
   | { t: 'eco_get'; op?: string }
   | { t: 'eco_products'; op?: string }
   | { t: 'eco_reward'; op?: string; reward_id: string }
@@ -49,12 +54,18 @@ export type MatchServerMessage =
   | { t: 'match_unqueued' }
   | {
     t: 'match'; match_id: string; game: string; queue: QueueName; seat: 0 | 1
-    opponent: { player_id: string; display_name: string }
+    opponent: { player_id: string; display_name: string; rating: number; tier: TierName; placement: boolean; games: number }
   }
   | { t: 'result_ack'; match_id: string }
   | {
-    t: 'match_end'; match_id: string; status: 'complete' | 'void' | 'forfeit'; outcome: Outcome | null
-    rating?: { before: number; after: number; games: number; placement: boolean }
+    t: 'match_end'; match_id: string; status: 'complete' | 'void' | 'forfeit'; reason: MatchEndReason; outcome: Outcome | null
+    rating?: { before: number; after: number; games: number; placement: boolean; tier: TierName }
+    weight: 1 | 0.5; duration_ms: number; rewardable: boolean
+  }
+  | {
+    t: 'ladder'; game: string; page: number; page_size: 10; total: number
+    entries: { rank: number; player_id: string; display_name: string; rating: number; tier: TierName }[]
+    me: { rank: number | null; rating: number; tier: TierName; placement: boolean; games: number } | null
   }
 
 export type EconomyClientMessage = Extract<MatchClientMessage, { t: typeof ECONOMY_CLIENT_TYPES[number] }>
@@ -108,9 +119,9 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
       if (game !== undefined && (typeof game !== 'string' || game.length < 1 || game.length > 64)) {
         return bad('auth.game must be 1..64 chars')
       }
-      const trimmedName = name?.trim()
       const out: { t: 'auth'; provider: Provider; token: string; name?: string; game?: string } = { t: 'auth', provider, token }
-      if (trimmedName !== undefined && trimmedName.length >= 3 && trimmedName.length <= 16) out.name = trimmedName
+      // Raw pass-through: sanitizeName in the identity verifiers decides; only oversized names are dropped.
+      if (name !== undefined && name.length <= 128) out.name = name
       if (game !== undefined) out.game = game
       return out
     }
@@ -124,6 +135,13 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
     }
     case 'match_unqueue':
       return { t: 'match_unqueue' }
+    case 'ladder': {
+      const { page } = value
+      if (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 || page > 1000) {
+        return bad('ladder.page must be an integer 1..1000')
+      }
+      return { t: 'ladder', page }
+    }
     case 'eco_get': case 'eco_products': case 'eco_reward': case 'eco_buy': case 'eco_open': case 'eco_wavedash': case 'eco_stripe':
       return parseEconomy(type, value)
     case 'save_list': case 'save_get': case 'save_put': case 'save_delete':

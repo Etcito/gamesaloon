@@ -165,7 +165,7 @@ export class MatchService implements RelayExtension {
       else if (parsed.t === 'match_unqueue') {
         if (this.mm.remove(conn)) this.send(conn, { t: 'match_unqueued' })
         else this.error(conn, 'not_queued')
-      } else await this.result(conn, parsed.match_id, parsed.outcome)
+      } else if (parsed.t === 'result') await this.result(conn, parsed.match_id, parsed.outcome)
     } catch (err) {
       if (isEconomyMessage(parsed)) return this.economyError(conn, parsed, err)
       if (isOnlineMessage(parsed)) return this.onlineError(conn, parsed, err)
