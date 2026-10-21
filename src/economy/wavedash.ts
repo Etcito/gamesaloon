@@ -9,6 +9,7 @@
 // Every check fails closed.
 
 import type { IdentityVerifier } from '../identity.ts'
+import { sanitizeName } from '../names.ts'
 import { createJwks, JwtError, verifyJwt } from './jwt.ts'
 import type { Jwks } from './jwt.ts'
 
@@ -106,7 +107,7 @@ export function createWavedash(opts: { fetch?: typeof fetch; now?: () => number;
       return {
         async verify(token, name) {
           const u = await self.verifyUser(token)
-          const display = typeof name === 'string' && name.trim().length >= 3 && name.trim().length <= 16 ? name.trim() : `Player-${u.sub.slice(0, 4)}`
+          const display = sanitizeName(name, 'Player-' + u.sub.slice(0, 4))
           return { provider: 'wavedash', external_id: u.sub, display_name: display }
         },
       }
