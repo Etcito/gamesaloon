@@ -12,6 +12,7 @@ export interface Config {
   maxClients: number
   allowedOrigins: string[]
   logLevel: 'error' | 'info' | 'debug'
+  rankedRequireAccount: boolean
 }
 
 function list(v: string | undefined, def: string): string[] {
@@ -42,5 +43,6 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     maxClients: int(env, 'MAX_CLIENTS', 2000),
     allowedOrigins: list(env.ALLOWED_ORIGINS, ''),
     logLevel,
+    rankedRequireAccount: env.RANKED_REQUIRE_ACCOUNT === '1' || env.RANKED_REQUIRE_ACCOUNT === 'true',
   }
 }

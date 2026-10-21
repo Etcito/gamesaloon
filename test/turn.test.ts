@@ -43,7 +43,15 @@ test('config: defaults', () => {
     maxClients: 2000,
     allowedOrigins: [],
     logLevel: 'info',
+    rankedRequireAccount: false,
   })
+})
+
+test('config: ranked require account', () => {
+  assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: '1' }).rankedRequireAccount, true)
+  assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: 'true' }).rankedRequireAccount, true)
+  assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: '0' }).rankedRequireAccount, false)
+  assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: 'yes' }).rankedRequireAccount, false)
 })
 
 test('config: lists and numbers', () => {
