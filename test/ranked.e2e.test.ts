@@ -63,7 +63,9 @@ const hooks: HandshakeHooks = {
   },
 }
 
-before(async () => {
+let ready: Promise<void> = Promise.resolve()
+
+before(() => (ready = (async () => {
   if (skip) return
   // 25 ranked players: player i wins 5 + i one-sided games against a placement dummy, so ratings are distinct.
   const { player: dummy } = await base.getOrCreateByIdentity({ provider: 'guest', external_id: 'ladder-dummy' })
@@ -86,9 +88,10 @@ before(async () => {
   open = make(false)
   gatedPort = (await gated.listen()).port
   openPort = (await open.listen()).port
-})
+})()))
 
 after(async () => {
+  await ready
   for (const ws of sockets) { try { ws.close() } catch { /* closing */ } }
   for (const s of [gated, open]) if (s) await s.close()
   gated = null
