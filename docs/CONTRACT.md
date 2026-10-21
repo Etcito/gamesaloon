@@ -1,4 +1,4 @@
-# GameSaloon online contract (r8)
+# GameSaloon online contract (r9)
 
 The shared rules of the GameSaloon server (internally called Handshake), the optional AI residents and every game client.
 One authority for the wire rules: this file. A change = a new revision number + one changelog line at the bottom. Written in English.
@@ -55,14 +55,57 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 - `match_queue` { game: string (1..64 chars), queue: `quick` | `ranked` }. Needs auth, and `game` must be the game the connection authenticated into (otherwise `bad_message`). Replies `match_queued`, then `match` when paired; errors `auth_required`, `already_queued`, `in_match`, `ranked_busy`, `resident_cannot_queue`, `bad_queue`, `bad_message`, `store_unavailable` (or relay `internal`). These `match_queue` / `match_unqueue` messages are distinct from the relay's legacy `queue` / `unqueue`.
 - `match_unqueue` {}. No auth required. Replies `match_unqueued`; error `not_queued` when the caller is not queued.
 - `result` { match_id: string (1..128 chars), outcome: `win` | `loss` | `draw` }. Needs auth. Replies `result_ack` { match_id } when the caller reports for a match; errors `unknown_match`, `already_reported`, `bad_message` (or relay `internal`).
+- `ladder` { page: integer (1..1000) }. Needs auth. Replies `ladder` { game, page, page_size: 10, total, entries, me } (10 entries per page; `me` is null for a guest); errors `auth_required`, `bad_message`, `store_unavailable` (or relay `internal`).
+- `eco_get` { op? }. Replies `eco_state`; see section 8.
+- `eco_products` { op? }. Replies `eco_products`; see section 8.
+- `eco_reward` { reward_id }. Replies `eco_reward`; see section 8.
+- `eco_buy` { op, product, qty? }. Replies `eco_bought`; see section 8.
+- `eco_open` { op, pack_type }. Replies `eco_opened`; see section 8.
+- `eco_wavedash` { op?, receipt_jwt, user_jwt? }. Replies `eco_purchase`; see section 8.
+- `eco_stripe` { op?, product, return_url }. Replies `eco_checkout`; see section 8.
+- `save_list` { op? }. Replies `save_list`; see section 9.
+- `save_get` { key }. Replies `save_data`; see section 9.
+- `save_put` { op?, key, base_version, data }. Replies `save_ok` or `save_conflict`; see section 9.
+- `save_delete` { op?, key, base_version }. Replies `save_deleted` or `save_conflict`; see section 9.
+- `ach_list` { op? }. Replies `ach_list`; see section 9.
+- `stats_get` { op? }. Replies `stats`; see section 9.
+- `stat_report` { op, stat, value }. Replies `stat_value`; see section 9.
+- `ach_ack` { op?, codes }. Replies `ach_acked`; see section 9.
+- `ugc_create` { op?, type?, title, description?, visibility?, content_type?, content, wavedash_ref? }. Replies `ugc_saved`; see section 9.
+- `ugc_update` { id, base_version?, ... }. Replies `ugc_saved`; see section 9.
+- `ugc_list` { owner?, type?, visibility?, cursor?, limit? }. Replies `ugc_list`; see section 9.
+- `ugc_get` { id }. Replies `ugc_item`; see section 9.
+- `ugc_delete` { id }. Replies `ugc_deleted`; see section 9.
 
 ### Server to client
 - `authed` { player_id, display_name, provider }.
 - `match_queued` { game, queue, rating: number, games: number, placement: boolean }.
 - `match_unqueued` {}.
-- `match` { match_id, game, queue, seat: 0 | 1, opponent: { player_id, display_name } }. Sent immediately before the relay's `matched`, on the same session and with the same reconnection token.
+- `match` { match_id, game, queue, seat: 0 | 1, opponent: { player_id, display_name, rating: number, tier, placement: boolean, games: number } }. Sent immediately before the relay's `matched`, on the same session and with the same reconnection token.
 - `result_ack` { match_id }.
-- `match_end` { match_id, status: `complete` | `void` | `forfeit`, outcome: `win` | `loss` | `draw` | null, rating?: { before, after, games, placement } }. `rating` appears only on ranked complete/forfeit; `outcome` is null when void.
+- `match_end` { match_id, status: `complete` | `void` | `forfeit`, reason: `agreed` | `disagreement` | `no_report` | `disconnect` | `both_disconnected` | `left` | `lone_draw` | `inactivity`, outcome: `win` | `loss` | `draw` | null, rating?: { before, after, games, placement, tier }, weight: 1 | 0.5, duration_ms: number, rewardable: boolean }. `rating` appears only on a ranked match that applied a result, with `tier` = `tierOf(after)`; `outcome` is null when void; `weight` is 0.5 below 180000 ms; `rewardable` is the decision-e flag ([matchmaking-and-elo.md](matchmaking-and-elo.md#rewardable)).
+- `ladder` { game, page, page_size: 10, total, entries: [{ rank, player_id, display_name, rating, tier }], me: { rank: number | null, rating, tier, placement, games } | null }. `me` is null for a guest.
+- `eco_state` { op?, coins, version, packs, cards }; see section 8.
+- `eco_products` { op?, products }; see section 8.
+- `eco_reward` { op?, reward_id, granted, coins, applied }; see section 8.
+- `eco_bought` { op?, product, qty, coins, packs, applied }; see section 8.
+- `eco_opened` { op?, pack_type, cards, refund, coins, remaining, applied }; see section 8.
+- `eco_purchase` { op?, provider, external_id, product, status, coins, granted, applied }; see section 8.
+- `eco_checkout` { op?, url, session_id }; see section 8.
+- `save_list` { op?, saves, quota }; see section 9.
+- `save_data` { op?, key, exists, version, etag, size, updated_at, data }; see section 9.
+- `save_ok` { op?, key, version, etag, size, updated_at, applied }; see section 9.
+- `save_conflict` { op?, key, exists, version, etag, size, updated_at, data }; see section 9.
+- `save_deleted` { op?, key, deleted, applied }; see section 9.
+- `ach_list` { op?, achievements, pending_sync }; see section 9.
+- `stats` { op?, stats }; see section 9.
+- `stat_value` { op?, stat, value, applied }; see section 9.
+- `ach_acked` { op?, codes }; see section 9.
+- `ach_unlocked` { achievements }; see section 9.
+- `ugc_saved` { op?, item, applied }; see section 9.
+- `ugc_list` { op?, items, next_cursor }; see section 9.
+- `ugc_item` { op?, item }; see section 9.
+- `ugc_deleted` { op?, id, deleted }; see section 9.
 
 ### Error codes
 | code | meaning |
@@ -80,6 +123,30 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 | `unknown_match` | This authenticated player is not in the named match. |
 | `already_reported` | This player already reported an outcome for the match. |
 | `store_unavailable` | A PlayerStore operation failed. |
+| `ranked_requires_account` | A guest asked for the ranked queue while the server requires an account (`RANKED_REQUIRE_ACCOUNT`). |
+| `economy_unavailable` | The game has no economy service. |
+| `insufficient_funds` | The coin balance does not cover the purchase. |
+| `no_packs` | No closed pack of that type is left. |
+| `tx_conflict` | The same `op` was used with other parameters. |
+| `unknown_product` | No such product. |
+| `unknown_reward` | No such reward. |
+| `unknown_pack` | No such pack type. |
+| `purchase_refunded` | The purchase was refunded. |
+| `purchases_blocked` | Real-money purchases are blocked after a refund. |
+| `bad_receipt` | The Wavedash receipt failed verification. |
+| `receipt_mismatch` | The receipt belongs to another player or user JWT. |
+| `not_production` | The receipt is a playtest receipt on a production game. |
+| `bad_return_url` | The Stripe return url is invalid. |
+| `payment_unavailable` | The Stripe bridge is unavailable. |
+| `online_unavailable` | The game has no online-data service. |
+| `version_conflict` | The save or UGC `base_version` differs from the server's. |
+| `too_large` | The save or UGC content exceeds its limit. |
+| `quota_exceeded` | The player's save or UGC quota is full. |
+| `forbidden` | A non-owner tried to change a visible item. |
+| `rate_limited` | Too many writes in the window. |
+| `not_found` | The requested item does not exist for this player. |
+| `unknown_stat` | No such stat. |
+| `stat_not_writable` | The stat is not client-writable. |
 
 `bad_message` (invalid fields) and `internal` are the relay's existing codes, reused as docs/RELAY.md names them.
 
@@ -214,3 +281,4 @@ On itch.io and the web, only Handshake is used.
 - r6 (2026-10-15): refund policy. A refunded purchase (Stripe `charge.refunded` in full, Wavedash `purchase.refunded`) takes back what it gave: its coins, its closed packs, and what was already spent is recovered from the player's later pack purchases (closed packs first, then the cards drawn from the newest openings). The balance never goes below zero; cards from rewards or earlier purchases stay. The player may not buy with real money for `economy.refund_ban_days` days (etc_settings, default 30, 0 = no ban; table `etc_purchase_bans`): `eco_stripe` answers `purchases_blocked`, `eco_products` lists only coin products and adds `blocked_until` (epoch ms). A purchase already paid during the ban is still granted. Additive.
 - r7 (2026-10-15): game-scoped Stripe webhook, Wavedash audience disambiguation (owner first, else refused), opt-in file-backed game registry with per-game reload, creator room and data limits. Additive: nothing changes without `ETCITO_GAME_KEYS_FILE`.
 - r8 (2026-10-16): documentation pass only, no wire change. Product names and internal paths removed; section 1 describes the open-source components; sections 3 and 5 aligned with the code (tiers are constants, the K formula, no fixed prices); the refund rule now says the balance never goes below zero (as r6 and the code already did).
+- r9 (2026-10-21): ranked play: `ladder` in both directions (`page_size` 10, guest `me` null, 45 s cache), error `ranked_requires_account`, `match.opponent` rating/tier/placement/games, `match_end` reason/weight/duration_ms/rewardable/rating.tier, graceful-leave forfeit (`left`), lone draw, 10-minute inactivity void, 180 s half weight, `etc_matches` match records (idempotent, written before `onMatchEnd`) and `rewardable` (no server coin credit). Additive.

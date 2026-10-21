@@ -5,7 +5,7 @@ JSON text frames over WebSocket at path `/ws`. Every frame is one JSON object wi
 | First frame `t` | The connection is | Section |
 |---|---|---|
 | `hello` (or anything the relay does not claim) | a **rooms** connection | [Rooms](#rooms-protocol) |
-| `create`, `join`, `act`, `bye`, `queue`, `unqueue`, `resume`, `ping` (relay), or `auth`, `match_queue`, `match_unqueue`, `result`, `eco_*`, `save_*`, `ach_*`, `stats_get`, `stat_report`, `ugc_*` (extensions) | a **relay + matchmaking** connection | [Relay](#relay-connection) and [Matchmaking](#matchmaking-messages) |
+| `create`, `join`, `act`, `bye`, `queue`, `unqueue`, `resume`, `ping` (relay), or `auth`, `match_queue`, `match_unqueue`, `result`, `ladder`, `eco_*`, `save_*`, `ach_*`, `stats_get`, `stat_report`, `ugc_*` (extensions) | a **relay + matchmaking** connection | [Relay](#relay-connection) and [Matchmaking](#matchmaking-messages) |
 
 (Source: `relayClaims` in `src/relay/protocol.ts`, `matchClaims` in `src/match/messages.ts`, and the claim logic in `src/transport.ts`.) A connection that sent no first frame within 10 seconds is closed with code 4000 `hello_timeout`.
 
@@ -153,6 +153,7 @@ These ride on a relay connection. The pairing rules, ratings and timings are in 
 | `match_queue` | `game` (1..64 chars), `queue: 'quick' \| 'ranked'` | yes | `match_queued`, later `match` |
 | `match_unqueue` | none | no | `match_unqueued` |
 | `result` | `match_id` (1..128 chars), `outcome: 'win' \| 'loss' \| 'draw'` | yes | `result_ack` |
+| `ladder` | `page` (integer 1..1000) | yes | `ladder` |
 
 `token` is 16 to 128 characters of `[A-Za-z0-9_-]` for `guest`, and 1 to 4096 characters for `wavedash` and `itch`. `name` is used only when the player is first created, and only if it is 3 to 16 characters after trimming. `game` selects which game's player list the connection joins when the server serves several games (see [multi-game.md](multi-game.md)); with a single store or a single game it may be omitted. After `auth`, `match_queue.game` must be the game the connection authenticated into.
 
@@ -163,15 +164,16 @@ Do not confuse `match_queue` / `match_unqueue` with the relay's legacy `queue` /
 - `authed` `{ player_id, display_name, provider }`
 - `match_queued` `{ game, queue, rating, games, placement }`
 - `match_unqueued` `{}`
-- `match` `{ match_id, game, queue, seat: 0 | 1, opponent: { player_id, display_name } }`. Sent just before the relay's `matched` frame, on the same connection.
+- `match` `{ match_id, game, queue, seat: 0 | 1, opponent: { player_id, display_name, rating, tier, placement, games } }`. `rating`, `tier`, `placement` and `games` describe the opponent's ranked state. Sent just before the relay's `matched` frame, on the same connection.
 - `result_ack` `{ match_id }`
-- `match_end` `{ match_id, status: 'complete' | 'void' | 'forfeit', outcome: 'win' | 'loss' | 'draw' | null, rating?: { before, after, games, placement } }`. `outcome` is from the receiver's point of view and is `null` when void. `rating` appears only for a ranked match that applied a result.
+- `match_end` `{ match_id, status: 'complete' | 'void' | 'forfeit', reason: 'agreed' | 'disagreement' | 'no_report' | 'disconnect' | 'both_disconnected' | 'left' | 'lone_draw' | 'inactivity', outcome: 'win' | 'loss' | 'draw' | null, rating?: { before, after, games, placement, tier }, weight: 1 | 0.5, duration_ms, rewardable: boolean }`. `outcome` is from the receiver's point of view and is `null` when void. `rating` appears only for a ranked match that applied a result; `rating.tier` is the tier after the change. `weight` is `0.5` for a match shorter than 180000 ms. `duration_ms` is `ended_at - started_at`. `rewardable` is `true` only for a complete, agreed ranked match of at least 180000 ms between two non-resident accounts (see [matchmaking-and-elo.md](matchmaking-and-elo.md#rewardable)).
+- `ladder` `{ game, page, page_size: 10, total, entries: [{ rank, player_id, display_name, rating, tier }], me: { rank: number | null, rating, tier, placement, games } | null }`. Ordered by rating, then player id; `rank` is 1-based and `null` while in placement. `me` is the receiver's own row, or `null` for a `guest` (a guest reads the ladder without a pinned row).
 
 ### Error reasons
 
 | reason | meaning |
 |---|---|
-| `auth_required` | `match_queue` before `auth` |
+| `auth_required` | `match_queue` or `ladder` before `auth` |
 | `already_authed` | a second `auth` on the same connection |
 | `auth_failed` | identity verification refused, or the `verifyIdentity` hook threw |
 | `auth_unavailable` | the provider has no verifier: `wavedash` or `itch` without a `verifyIdentity` hook, or `itch` under `npm start` (no itch verifier ships) |
@@ -184,6 +186,7 @@ Do not confuse `match_queue` / `match_unqueue` with the relay's legacy `queue` /
 | `unknown_match` | `result` for a match this player is not in |
 | `already_reported` | this player already reported for this match |
 | `store_unavailable` | a `PlayerStore` call failed |
+| `ranked_requires_account` | `match_queue` with `queue: 'ranked'` from a `guest` while the server sets `RANKED_REQUIRE_ACCOUNT`; the player is not queued |
 | `bad_message` | invalid fields; also an unknown `game` in `auth`, a missing `game` while several games are served, and a `match_queue.game` different from the authenticated game (relay code reused) |
 | `internal` | unexpected failure (relay code reused) |
 
@@ -204,9 +207,9 @@ C -> {"t":"match_queue","game":"kart","queue":"ranked"}
 C <- {"t":"match_queued","game":"kart","queue":"ranked","rating":2500,"games":0,"placement":true}
 D -> {"t":"match_queue","game":"kart","queue":"ranked"}
 D <- {"t":"match_queued","game":"kart","queue":"ranked","rating":2500,"games":0,"placement":true}
-D <- {"t":"match","match_id":"4058fa24-...","game":"kart","queue":"ranked","seat":1,"opponent":{"player_id":"942772a4-...","display_name":"Carol"}}
+D <- {"t":"match","match_id":"4058fa24-...","game":"kart","queue":"ranked","seat":1,"opponent":{"player_id":"942772a4-...","display_name":"Carol","rating":2500,"tier":"Platinum","placement":true,"games":0}}
 D <- {"t":"matched","seed":2491007138,"hostStarts":true,"youAre":1,"token":"6761b103-...","players":2,"opps":[null,null],"opp":null}
-C <- {"t":"match","match_id":"4058fa24-...","game":"kart","queue":"ranked","seat":0,"opponent":{"player_id":"00ce1acc-...","display_name":"Guest-8A69"}}
+C <- {"t":"match","match_id":"4058fa24-...","game":"kart","queue":"ranked","seat":0,"opponent":{"player_id":"00ce1acc-...","display_name":"Guest-8A69","rating":2500,"tier":"Platinum","placement":true,"games":0}}
 C <- {"t":"matched","seed":2491007138,"hostStarts":true,"youAre":0,"token":"9114feff-...","players":2,"opps":[null,null],"opp":null}
 C -> {"t":"act","a":{"x":1}}
 C <- {"t":"ack","n":1}
@@ -215,8 +218,8 @@ C -> {"t":"result","match_id":"4058fa24-...","outcome":"win"}
 C <- {"t":"result_ack","match_id":"4058fa24-..."}
 D -> {"t":"result","match_id":"4058fa24-...","outcome":"loss"}
 D <- {"t":"result_ack","match_id":"4058fa24-..."}
-D <- {"t":"match_end","match_id":"4058fa24-...","status":"complete","outcome":"loss","rating":{"before":2500,"after":2420,"games":1,"placement":true}}
-C <- {"t":"match_end","match_id":"4058fa24-...","status":"complete","outcome":"win","rating":{"before":2500,"after":2580,"games":1,"placement":true}}
+D <- {"t":"match_end","match_id":"4058fa24-...","status":"complete","reason":"agreed","outcome":"loss","rating":{"before":2500,"after":2420,"games":1,"placement":true,"tier":"Platinum"},"weight":1,"duration_ms":240000,"rewardable":false}
+C <- {"t":"match_end","match_id":"4058fa24-...","status":"complete","reason":"agreed","outcome":"win","rating":{"before":2500,"after":2580,"games":1,"placement":true,"tier":"Platinum"},"weight":1,"duration_ms":240000,"rewardable":false}
 D -> {"t":"result","match_id":"nope","outcome":"loss"}
 D <- {"t":"error","reason":"unknown_match"}
 D -> {"t":"match_unqueue"}
@@ -224,3 +227,16 @@ D <- {"t":"error","reason":"not_queued"}
 ```
 
 The `token` in `matched` is the relay's reconnection token for that seat (see `resume` in [RELAY.md](RELAY.md)); it is also what keeps the match alive across a reconnect, because the match service restores the seat's identity when the seat resumes.
+
+### Example ladder exchange
+
+An account player (`W`) and a guest (`G`) ask for page 1:
+
+```
+W -> {"t":"ladder","page":1}
+W <- {"t":"ladder","game":"kart","page":1,"page_size":10,"total":42,"entries":[{"rank":1,"player_id":"7f0e6d3a-...","display_name":"Mira","rating":2860,"tier":"Diamond"},{"rank":2,"player_id":"a1c9f20b-...","display_name":"Tobias","rating":2710,"tier":"Platinum"}],"me":{"rank":7,"rating":2512,"tier":"Platinum","placement":false,"games":12}}
+G -> {"t":"ladder","page":1}
+G <- {"t":"ladder","game":"kart","page":1,"page_size":10,"total":42,"entries":[{"rank":1,"player_id":"7f0e6d3a-...","display_name":"Mira","rating":2860,"tier":"Diamond"},{"rank":2,"player_id":"a1c9f20b-...","display_name":"Tobias","rating":2710,"tier":"Platinum"}],"me":null}
+```
+
+`entries` holds at most 10 rows (the rest of the page is shortened above). A player in placement has `rank: null` in `me`; a guest gets the page but never a pinned `me` row.

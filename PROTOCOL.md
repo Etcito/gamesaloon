@@ -68,3 +68,7 @@ This file describes the rooms protocol spoken on the `/ws` endpoint. `src/protoc
 - **Timeouts:** hello within 10 s (else close 4000). The server pings every 20 s and terminates after 40 s without a pong. A lobby with no message for 30 min is closed. Sustained rate abuse (over the limit for 5 s) closes with 4008.
 - **ICE:** iceServers holds the STUN urls (default stun:stun.l.google.com:19302). With TURN_SECRET set it adds TURN urls with coturn REST credentials: username = `<unix expiry = now + 86400>:<client>`, credential = base64(HMAC-SHA1(TURN_SECRET, username)).
 - **No relay:** the server never relays race data. Race traffic flows peer to peer only.
+
+## Matchmaking and ranked
+
+The same `/ws` endpoint also serves GameSaloon matchmaking on a relay connection: `auth`, `match_queue` (`quick` or `ranked`), `result`, the `match` / `match_end` replies and the read-only `ladder` (10 entries per page, guests allowed with no `me` row). The message shapes and error reasons are in [docs/protocol.md](docs/protocol.md#matchmaking-messages); the pairing, rating, forfeit, inactivity, match-record and `rewardable` rules are in [docs/matchmaking-and-elo.md](docs/matchmaking-and-elo.md). Ranked play can require an account (`RANKED_REQUIRE_ACCOUNT`), refused with `ranked_requires_account`.
