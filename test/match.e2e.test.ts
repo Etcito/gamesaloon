@@ -278,6 +278,7 @@ async function probeResult(c: Client): Promise<void> {
 test('result: agreeing reports update the ratings to 2580/2420 and send match_end', { skip }, async () => {
   const game = 'e2e-result'
   const [a, aa, b, ab, matchId] = await rankedPair(game)
+  tick(180000) // a full-length match (RANKED_MIN_MS): weight 1
 
   a.send({ t: 'result', match_id: matchId, outcome: 'win' })
   assert.equal((await a.wait((m) => m.t === 'result_ack' || m.t === 'error')).match_id, matchId)
@@ -302,6 +303,7 @@ test('result: agreeing reports update the ratings to 2580/2420 and send match_en
 test('forfeit: a socket closed for more than 90 s loses and the rating is applied', { skip }, async () => {
   const game = 'e2e-forfeit'
   const [a, aa, b, , matchId] = await rankedPair(game)
+  tick(180000) // a full-length match (RANKED_MIN_MS): weight 1
 
   a.close()
   await b.wait((m) => m.t === 'opp_dropped')

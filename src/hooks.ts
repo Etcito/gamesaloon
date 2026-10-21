@@ -39,12 +39,17 @@ export interface MatchRecord {
   players: [string, string]
   residents: [boolean, boolean]
   status: 'complete' | 'void' | 'forfeit'
-  reason: 'agreed' | 'disagreement' | 'no_report' | 'disconnect' | 'both_disconnected'
+  reason: 'agreed' | 'disagreement' | 'no_report' | 'disconnect' | 'both_disconnected' | 'left' | 'lone_draw' | 'inactivity'
   reports: [Outcome | null, Outcome | null]
   score_a: 0 | 0.5 | 1 | null
   ratings: [RatingChange, RatingChange] | null
   started_at: number
   ended_at: number
+  duration_ms: number
+  /** 0.5 when the match lasted less than RANKED_MIN_MS. */
+  weight: 1 | 0.5
+  /** A full ranked match agreed between two registered (non-guest, non-resident) players. */
+  rewardable: boolean
 }
 
 export interface HandshakeHooks {

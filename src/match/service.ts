@@ -62,7 +62,8 @@ interface ActiveMatch {
   firstReportAt: number | null
   down: [number | null, number | null]
   /** Set once the end is decided; kept while a ranked rating cannot be applied yet. */
-  ending: { status: MatchRecord['status']; reason: MatchRecord['reason']; score_a: 0 | 0.5 | 1 | null } | null
+  /** `only` marks a one-sided rating update (lone_draw: the reporter side). */
+  ending: { status: MatchRecord['status']; reason: MatchRecord['reason']; score_a: 0 | 0.5 | 1 | null; only?: 'a' | 'b' } | null
   busy: boolean
 }
 
@@ -167,6 +168,19 @@ export class MatchService implements RelayExtension {
     this.byConn.set(seat.conn, match)
   }
 
+  /** A graceful bye: the leaver forfeits unless it already reported or the match is decided. */
+  seatLeft(seat: RelaySeatRef): void {
+    const match = this.bySession.get(seat.session)
+    if (!match || (seat.seat !== 0 && seat.seat !== 1)) return
+    if (match.ending || match.reports[seat.seat] !== null) return
+    void this.decide(match, 'forfeit', 'left', seat.seat === 0 ? 0 : 1)
+  }
+
+  seatActed(seat: RelaySeatRef, now: number): void {
+    const match = this.bySession.get(seat.session)
+    if (match) match.lastActivityAt = now
+  }
+
   sessionEnded(session: string): void {
     const match = this.bySession.get(session)
     if (!match || match.ending) return
@@ -180,9 +194,19 @@ export class MatchService implements RelayExtension {
     for (const match of [...this.matches.values()]) {
       if (match.ending) {
         if (!match.busy) this.end(match)
-      } else if (!this.checkForfeit(match) && match.firstReportAt !== null &&
-        match.firstReportAt + RESULT_WAIT_MS <= nowMs && match.reports.includes(null)) {
-        this.decide(match, 'void', 'no_report', null)
+      } else if (this.checkForfeit(match)) {
+        continue
+      } else if (nowMs - match.lastActivityAt >= INACTIVITY_MS &&
+        (match.firstReportAt === null || nowMs - match.firstReportAt >= INACTIVITY_MS)) {
+        void this.decide(match, 'void', 'inactivity', null)
+      } else if (match.firstReportAt !== null && match.firstReportAt + RESULT_WAIT_MS <= nowMs && match.reports.includes(null)) {
+        const [r0, r1] = match.reports
+        const lone = r0 === null ? r1 : r1 === null ? r0 : null
+        if (lone === 'draw') {
+          // The lone draw reporter takes the loss; the opponent's rating is left untouched.
+          const reporter = r0 === null ? 1 : 0
+          void this.decide(match, 'complete', 'lone_draw', reporter === 0 ? 0 : 1, reporter === 0 ? 'a' : 'b')
+        } else void this.decide(match, 'void', 'no_report', null)
       }
     }
   }
@@ -630,6 +654,7 @@ export class MatchService implements RelayExtension {
     if (match.reports[seat] !== null) return this.error(conn, 'already_reported')
     match.reports[seat] = outcome
     match.firstReportAt ??= this.deps.now()
+    match.lastActivityAt = this.deps.now()
     this.send(conn, { t: 'result_ack', match_id: matchId })
     const [r0, r1] = match.reports
     if (r0 === null || r1 === null || match.ending) return
@@ -648,20 +673,27 @@ export class MatchService implements RelayExtension {
   }
 
   private decide(match: ActiveMatch, status: MatchRecord['status'], reason: MatchRecord['reason'],
-    score_a: 0 | 0.5 | 1 | null): Promise<void> {
-    match.ending = { status, reason, score_a }
+    score_a: 0 | 0.5 | 1 | null, only?: 'a' | 'b'): Promise<void> {
+    match.ending = { status, reason, score_a, ...(only ? { only } : {}) }
     return this.end(match)
   }
 
   /** Applies or unlocks the ranked state, then notifies, ends the session and calls onMatchEnd. */
   private async end(match: ActiveMatch): Promise<void> {
-    const { status, reason, score_a } = match.ending!
+    const { status, reason, score_a, only } = match.ending!
+    const now = this.deps.now()
+    const duration_ms = now - match.started_at
+    const weight = duration_ms < RANKED_MIN_MS ? SHORT_WEIGHT : 1
+    const rewardable = match.queue === 'ranked' && status === 'complete' && reason === 'agreed' &&
+      duration_ms >= RANKED_MIN_MS && !match.residents[0] && !match.residents[1] &&
+      match.auth[0].provider !== 'guest' && match.auth[1].provider !== 'guest'
     match.busy = true
     let ratings: [RatingChange, RatingChange] | null = null
     try {
       if (match.queue === 'ranked' && score_a !== null) {
         const res = await this.storeFor(match.game).applyRankedResult({
-          match_id: match.match_id, game: match.game, a: match.players[0], b: match.players[1], score_a,
+          match_id: match.match_id, game: match.game, a: match.players[0], b: match.players[1], score_a, weight,
+          ...(only ? { only } : {}),
         })
         ratings = [res.a, res.b]
       } else if (match.queue === 'ranked') {
@@ -683,11 +715,13 @@ export class MatchService implements RelayExtension {
       const score = score_a === null ? null : seat === 0 ? score_a : 1 - score_a
       const r = ratings?.[seat]
       this.send(c, {
-        t: 'match_end', match_id: match.match_id, status, outcome: score === null ? null : OUTCOME(score),
-        ...(r ? { rating: { before: r.before, after: r.after, games: r.games, placement: r.placement } } : {}),
+        t: 'match_end', match_id: match.match_id, status, reason, outcome: score === null ? null : OUTCOME(score),
+        ...(r ? { rating: { before: r.before, after: r.after, games: r.games, placement: r.placement, tier: tierOf(r.after) } } : {}),
+        weight, duration_ms, rewardable,
       })
     })
-    if (status === 'forfeit' || reason === 'no_report' || reason === 'both_disconnected') {
+    if (status === 'forfeit' || reason === 'no_report' || reason === 'both_disconnected' ||
+      reason === 'inactivity' || reason === 'lone_draw') {
       this.hub?.endSession(match.session, reason)
     }
     if (score_a !== null) {
@@ -707,8 +741,14 @@ export class MatchService implements RelayExtension {
       match_id: match.match_id, game: match.game, queue: match.queue,
       players: [match.players[0], match.players[1]], residents: [match.residents[0], match.residents[1]],
       status, reason, reports: [match.reports[0], match.reports[1]], score_a, ratings,
-      started_at: match.started_at, ended_at: this.deps.now(),
+      started_at: match.started_at, ended_at: now, duration_ms, weight, rewardable,
     }
+    try {
+      await this.storeFor(match.game).recordMatch(record)
+    } catch {
+      this.deps.log('error', `[match] recordMatch failed for ${match.match_id}`)
+    }
+    for (const id of match.players) this.ladder.invalidate(id, match.game)
     try {
       await this.hooks.onMatchEnd?.(record)
     } catch {
