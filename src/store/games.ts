@@ -7,6 +7,8 @@ import { createHttpPlayerStore } from './http.ts'
 import { createGameSettings, DEFAULT_CREATOR_MAX_ROOMS, DEFAULT_GAME_PARAMS } from './gamesettings.ts'
 import type { OnlineLimits } from '../online/limits.ts'
 import type { GameSettings } from './gamesettings.ts'
+import { createSettingsReader } from './settings.ts'
+import type { SettingsReader } from './settings.ts'
 import type { TableApi } from './tables.ts'
 import type { PlayerStore, QueueName } from './types.ts'
 import type { EconomyService } from '../economy/service.ts'
@@ -24,6 +26,8 @@ export interface GameBackend {
   economy?: EconomyService
   /** Cloud saves, stats + achievements and player content of the game. */
   online?: OnlineServices
+  /** Raw etc_settings values of the game (bots.enabled, bots.tokens), cached briefly; absent = every setting unset. */
+  settings?: SettingsReader
 }
 
 export interface GameRouter {
@@ -34,8 +38,8 @@ export interface GameRouter {
 }
 
 /** One store for every game name (memory store, tests, embedding): the behaviour before multi-game support. */
-export function singleStoreRouter(store: PlayerStore, economy?: EconomyService, online?: OnlineServices): GameRouter {
-  const backend: GameBackend = { game: null, store, queues: () => DEFAULT_GAME_PARAMS.queues, ...(economy ? { economy } : {}), ...(online ? { online } : {}) }
+export function singleStoreRouter(store: PlayerStore, economy?: EconomyService, online?: OnlineServices, settings?: SettingsReader): GameRouter {
+  const backend: GameBackend = { game: null, store, queues: () => DEFAULT_GAME_PARAMS.queues, ...(economy ? { economy } : {}), ...(online ? { online } : {}), ...(settings ? { settings } : {}) }
   return { resolve: () => backend }
 }
 
@@ -94,7 +98,8 @@ export async function createGameRouter(apis: Record<string, TableApi>, opts: {
     const store = createHttpPlayerStore(api, { now: opts.now, elo: () => s.current().elo })
     const economy = opts.economy?.(game, api, store)
     const online = createOnline(api, { now: opts.now, log: opts.log, ...(creator && caps ? { limitCaps: caps.online } : {}) })
-    backends.set(game, { game, store, queues: () => s.current().queues, ...(creator ? { maxRooms: () => s.maxRooms() } : {}), ...(economy ? { economy } : {}), online })
+    backends.set(game, { game, store, queues: () => s.current().queues, ...(creator ? { maxRooms: () => s.maxRooms() } : {}), ...(economy ? { economy } : {}), online,
+      settings: createSettingsReader(api, { now: opts.now }) })
   }
   for (const s of settings) s.start()
   for (const b of backends.values()) b.economy?.start()

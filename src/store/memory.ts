@@ -94,7 +94,7 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
 
   return {
     async getOrCreateByIdentity(identity, init) {
-      if (!identity || !['wavedash', 'itch', 'guest'].includes(identity.provider)) {
+      if (!identity || !['wavedash', 'itch', 'guest', 'bot'].includes(identity.provider)) {
         throw new StoreError('bad_argument', 'Invalid identity provider')
       }
       stringArgument(identity.external_id, 'external id', 256)

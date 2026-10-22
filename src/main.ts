@@ -6,6 +6,7 @@ import { loadConfig } from './config.ts'
 import { createHandshake } from './handshake.ts'
 import { defaultDeps } from './server.ts'
 import { defaultVerifiers, verifyIdentityHook } from './identity.ts'
+import { botVerifier } from './bot.ts'
 import { loadStoreConfig } from './store/config.ts'
 import { openStores } from './store/setup.ts'
 import { createWavedash } from './economy/wavedash.ts'
@@ -26,7 +27,11 @@ async function main(): Promise<void> {
     store: stores,
     hooks: {
       // guest and wavedash (user JWT against the Wavedash JWKS) are verified; itch refuses until a real verifier is injected (src/identity.ts).
-      verifyIdentity: verifyIdentityHook(defaultVerifiers({ wavedash: wavedash.identityVerifier() })),
+      // bot is verified against the game's etc_settings (bots.enabled, bots.tokens); with no rows every bot is refused (src/bot.ts).
+      verifyIdentity: verifyIdentityHook(defaultVerifiers({
+        wavedash: wavedash.identityVerifier(),
+        bot: botVerifier({ settings: game => stores.resolve(game)?.settings, log }),
+      })),
       // No pickResident: residents are a separate service that embeds Handshake (no resident is invented here).
       onMatchEnd: (r) => log('info', `[match] end ${r.game}/${r.queue} ${r.match_id} ${r.status}`),
     },

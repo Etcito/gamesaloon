@@ -46,7 +46,18 @@ The `ETCITO_` prefix is historical: these variables configure the remote table s
 
 ### What `npm start` wires
 
-`src/main.ts` calls `createHandshake` with: the configuration above; the stores from `PLAYER_STORE`; a `verifyIdentity` hook where `guest` is verified, `wavedash` is verified against Wavedash's keys and `itch` is refused (`auth_unavailable`); an `onMatchEnd` hook that logs one line; no `pickResident` (no AI opponents); and the payment webhook routes (`/webhooks/wavedash`, `/webhooks/wavedash/playtest`, `/webhooks/stripe`, `/webhooks/stripe/<game>`). It closes gracefully on `SIGTERM` and `SIGINT`.
+`src/main.ts` calls `createHandshake` with: the configuration above; the stores from `PLAYER_STORE`; a `verifyIdentity` hook where `guest` is verified, `wavedash` is verified against Wavedash's keys and `itch` is refused (`auth_unavailable`), `bot` is checked against the game's `etc_settings` (see Bot provider); an `onMatchEnd` hook that logs one line; no `pickResident` (no AI opponents); and the payment webhook routes (`/webhooks/wavedash`, `/webhooks/wavedash/playtest`, `/webhooks/stripe`, `/webhooks/stripe/<game>`). It closes gracefully on `SIGTERM` and `SIGINT`.
+
+### Bot provider
+
+The `bot` identity provider (`src/bot.ts`) has no environment variable: it is driven per game by two `etc_settings` rows, written from the EtcitoGameServer administration interface and read through a 30 s cache (`src/store/settings.ts`):
+
+| Key | Value | Meaning |
+|---|---|---|
+| `bots.enabled` | `1` or `true` | Kill switch. Any other value, a missing row or a failed read refuses every bot of the game |
+| `bots.tokens` | JSON `{"<bot name>": "<sha256 hex>"}` | One entry per bot: the SHA-256 (hex) of its secret. A bot name is 3..16 chars of `A-Za-z0-9_-`; invalid entries are ignored; a missing row or invalid JSON refuses every bot |
+
+A bot authenticates with token `<bot name>:<secret>`; the secret's hash is compared in constant time. Example value of `bots.tokens`: `{"RookBot": "<output of: printf %s 'the-secret' | sha256sum>"}`. The server never logs a token or a hash. `npm start` wires this verifier for every game; per-bot daily caps are not implemented yet.
 
 ## Embedding
 

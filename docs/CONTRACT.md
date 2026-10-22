@@ -12,7 +12,7 @@ The code is the final reference; where this file and the code differ, the code w
 
 ## 2. Accounts
 - `player_id`: a UUID issued by the server. `display_name`: 3..16 chars.
-- `identities[]`: `{provider: "wavedash" | "itch" | "guest", external_id}`. One player can link several identities. The provider never changes gameplay, rating, collection or matchmaking.
+- `identities[]`: `{provider: "wavedash" | "itch" | "guest" | "bot", external_id}`. One player can link several identities. The provider never changes gameplay, rating, collection or matchmaking.
 - An AI resident is a player like any other (`kind: "resident"` is stored, never shown to players, visible to the operator only).
 
 ## 3. Rating (elastic ELO) and tiers
@@ -51,7 +51,7 @@ The code is the final reference; where this file and the code differ, the code w
 Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On the shared path, the first JSON text frame is routed by its `t`: relay types and the match types below go to the relay, while a rooms `hello` goes to rooms. Frames are JSON text objects with the type field `t`; errors use `{ t:'error', reason }`. A queue match pairs both players straight into a relay session on that same connection. The unchanged relay messages (`create`, `join`, `act`, `bye`, `queue`, `unqueue`, `resume`, `ping`) and their replies are documented in [docs/RELAY.md](RELAY.md). These additions are additive only: old KartRacer and GameNet clients keep working. The economy (coins, packs, collection, purchases) has its own messages, section 8.
 
 ### Client to server
-- `auth` { provider: `wavedash` | `itch` | `guest`, token: string (guest: 16..128 chars of [A-Za-z0-9_-]; wavedash/itch: 1..4096 chars), name?: string (3..16 chars after trim; used only when the player is created), game?: string (1..64 chars; the game whose player list is used) }. No auth required. Replies `authed` or error `already_authed`, `auth_failed`, `auth_unavailable`, `bad_message` (also: unknown `game`, or no `game` while several games are served), `store_unavailable` (or relay `internal`).
+- `auth` { provider: `wavedash` | `itch` | `guest` | `bot`, token: string (guest: 16..128 chars of [A-Za-z0-9_-]; wavedash/itch/bot: 1..4096 chars, bot: `<bot name>:<secret>`), name?: string (3..16 chars after trim; used only when the player is created), game?: string (1..64 chars; the game whose player list is used) }. No auth required. Replies `authed` or error `already_authed`, `auth_failed`, `auth_unavailable`, `bad_message` (also: unknown `game`, or no `game` while several games are served), `store_unavailable` (or relay `internal`).
 - `match_queue` { game: string (1..64 chars), queue: `quick` | `ranked` }. Needs auth, and `game` must be the game the connection authenticated into (otherwise `bad_message`). Replies `match_queued`, then `match` when paired; errors `auth_required`, `already_queued`, `in_match`, `ranked_busy`, `resident_cannot_queue`, `bad_queue`, `bad_message`, `store_unavailable` (or relay `internal`). These `match_queue` / `match_unqueue` messages are distinct from the relay's legacy `queue` / `unqueue`.
 - `match_unqueue` {}. No auth required. Replies `match_unqueued`; error `not_queued` when the caller is not queued.
 - `result` { match_id: string (1..128 chars), outcome: `win` | `loss` | `draw` }. Needs auth. Replies `result_ack` { match_id } when the caller reports for a match; errors `unknown_match`, `already_reported`, `bad_message` (or relay `internal`).

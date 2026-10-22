@@ -72,3 +72,7 @@ This file describes the rooms protocol spoken on the `/ws` endpoint. `src/protoc
 ## Matchmaking and ranked
 
 The same `/ws` endpoint also serves GameSaloon matchmaking on a relay connection: `auth`, `match_queue` (`quick` or `ranked`), `result`, the `match` / `match_end` replies and the read-only `ladder` (10 entries per page, guests allowed with no `me` row). The message shapes and error reasons are in [docs/protocol.md](docs/protocol.md#matchmaking-messages); the pairing, rating, forfeit, inactivity, match-record and `rewardable` rules are in [docs/matchmaking-and-elo.md](docs/matchmaking-and-elo.md). Ranked play can require an account (`RANKED_REQUIRE_ACCOUNT`), refused with `ranked_requires_account`.
+
+### Bot provider
+
+`auth` also accepts `provider: "bot"` for registered programs that play ranked. The token is `<bot name>:<secret>`; the bot name (3..16 chars of `A-Za-z0-9_-`) is the player's stable `external_id` and the fallback display name, `name` is sanitized like any display name. A bot is not a guest: it passes the `ranked_requires_account` gate, is rated and gets its ladder `me` row like an account, and needs no Wavedash account. Whether bots are accepted and which secrets are valid is per-game data in `etc_settings` (`bots.enabled`, `bots.tokens`, see [docs/configuration.md](docs/configuration.md#bot-provider)); with either key missing, or bots switched off, `auth` answers `auth_failed`. Without a bot verifier (embedding with `defaultVerifiers()`), it answers `auth_unavailable`.

@@ -149,7 +149,7 @@ These ride on a relay connection. The pairing rules, ratings and timings are in 
 
 | `t` | Fields | Needs auth | Reply |
 |---|---|---|---|
-| `auth` | `provider: 'wavedash' \| 'itch' \| 'guest'`, `token`, optional `name`, optional `game` (1..64 chars) | no | `authed` |
+| `auth` | `provider: 'wavedash' \| 'itch' \| 'guest' \| 'bot'` (bot token: `<bot name>:<secret>`), `token`, optional `name`, optional `game` (1..64 chars) | no | `authed` |
 | `match_queue` | `game` (1..64 chars), `queue: 'quick' \| 'ranked'` | yes | `match_queued`, later `match` |
 | `match_unqueue` | none | no | `match_unqueued` |
 | `result` | `match_id` (1..128 chars), `outcome: 'win' \| 'loss' \| 'draw'` | yes | `result_ack` |
@@ -167,7 +167,7 @@ Do not confuse `match_queue` / `match_unqueue` with the relay's legacy `queue` /
 - `match` `{ match_id, game, queue, seat: 0 | 1, opponent: { player_id, display_name, rating, tier, placement, games } }`. `rating`, `tier`, `placement` and `games` describe the opponent's ranked state. Sent just before the relay's `matched` frame, on the same connection.
 - `result_ack` `{ match_id }`
 - `match_end` `{ match_id, status: 'complete' | 'void' | 'forfeit', reason: 'agreed' | 'disagreement' | 'no_report' | 'disconnect' | 'both_disconnected' | 'left' | 'lone_draw' | 'inactivity', outcome: 'win' | 'loss' | 'draw' | null, rating?: { before, after, games, placement, tier }, weight: 1 | 0.5, duration_ms, rewardable: boolean }`. `outcome` is from the receiver's point of view and is `null` when void. `rating` appears only for a ranked match that applied a result; `rating.tier` is the tier after the change. `weight` is `0.5` for a match shorter than 180000 ms. `duration_ms` is `ended_at - started_at`. `rewardable` is `true` only for a complete, agreed ranked match of at least 180000 ms between two non-resident accounts (see [matchmaking-and-elo.md](matchmaking-and-elo.md#rewardable)).
-- `ladder` `{ game, page, page_size: 10, total, entries: [{ rank, player_id, display_name, rating, tier }], me: { rank: number | null, rating, tier, placement, games } | null }`. Ordered by rating, then player id; `rank` is 1-based and `null` while in placement. `me` is the receiver's own row, or `null` for a `guest` (a guest reads the ladder without a pinned row).
+- `ladder` `{ game, page, page_size: 10, total, entries: [{ rank, player_id, display_name, rating, tier }], me: { rank: number | null, rating, tier, placement, games } | null }`. Ordered by rating, then player id; `rank` is 1-based and `null` while in placement. `me` is the receiver's own row, or `null` for a `guest` (a `bot` gets its row; a guest reads the ladder without a pinned row).
 
 ### Error reasons
 

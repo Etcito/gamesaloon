@@ -104,8 +104,8 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
   switch (type) {
     case 'auth': {
       const { provider, token, name, game } = value
-      if (provider !== 'wavedash' && provider !== 'itch' && provider !== 'guest') {
-        return bad('auth.provider must be wavedash, itch or guest')
+      if (provider !== 'wavedash' && provider !== 'itch' && provider !== 'guest' && provider !== 'bot') {
+        return bad('auth.provider must be wavedash, itch, guest or bot')
       }
       if (typeof token !== 'string') return bad('auth.token must be a string')
       if (provider === 'guest') {

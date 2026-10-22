@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import type { MatchRecord } from '../hooks.ts'
 
-export type Provider = 'wavedash' | 'itch' | 'guest'
+export type Provider = 'wavedash' | 'itch' | 'guest' | 'bot'
 export type QueueName = 'quick' | 'ranked'
 export type PlayerKind = 'human' | 'resident'
 export type TierName = 'Bronze' | 'Gold' | 'Platinum' | 'Diamond' | 'Master'

@@ -8,6 +8,7 @@ import { loadStoreConfig } from './config.ts'
 import { createGameRouter, singleStoreRouter } from './games.ts'
 import type { GameBackend, GameRouter, GameRouterHandle } from './games.ts'
 import { createCrmTableApi, createMemoryTableApi } from './tables.ts'
+import { createSettingsReader } from './settings.ts'
 import type { StoreConfig } from './config.ts'
 import { createEconomyService } from '../economy/service.ts'
 import { createStripeBridge } from '../economy/stripe.ts'
@@ -34,7 +35,7 @@ export async function openStores(cfg: StoreConfig, opts: {
     const api = createMemoryTableApi()
     const economy = createEconomyService({ game: 'memory', api, store, wavedash: opts.wavedash, log: opts.log })
     economy.start()
-    const router = singleStoreRouter(store, economy, createOnline(api, { log: opts.log }))
+    const router = singleStoreRouter(store, economy, createOnline(api, { log: opts.log }), createSettingsReader(api))
     return { ...router, backends: () => [router.resolve(undefined)!], close() { economy.stop() } }
   }
   const multiCreator = cfg.keyFile !== undefined

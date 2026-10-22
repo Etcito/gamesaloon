@@ -127,7 +127,7 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
 
   return {
     async getOrCreateByIdentity(identity, init) {
-      if (!identity || !['wavedash', 'itch', 'guest'].includes(identity.provider)) throw new StoreError('bad_argument', 'Invalid identity provider')
+      if (!identity || !['wavedash', 'itch', 'guest', 'bot'].includes(identity.provider)) throw new StoreError('bad_argument', 'Invalid identity provider')
       stringArgument(identity.external_id, 'external id', 256)
       const kind = init?.kind ?? 'human'
       if (kind !== 'human' && kind !== 'resident') throw new StoreError('bad_argument', 'Invalid player kind')

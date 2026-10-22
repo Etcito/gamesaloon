@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 // Identity verification per provider. A provider is trusted only through an injected IdentityVerifier;
-// `guest` has a real one, `wavedash` and `itch` fail closed until a real verifier is supplied.
+// `guest` has a real one, `wavedash`, `itch` and `bot` fail closed until a real verifier is supplied (bot: src/bot.ts).
 
 import { guestIdentity } from './hooks.ts'
 import type { HandshakeHooks, VerifiedIdentity } from './hooks.ts'
@@ -32,12 +32,13 @@ export function notConfiguredVerifier(provider: Provider): IdentityVerifier {
 
 export type IdentityVerifiers = Record<Provider, IdentityVerifier>
 
-/** The default set: guest is real, wavedash and itch refuse. Pass `overrides` to plug real verifiers. */
+/** The default set: guest is real, wavedash, itch and bot refuse. Pass `overrides` to plug real verifiers. */
 export function defaultVerifiers(overrides: Partial<IdentityVerifiers> = {}): IdentityVerifiers {
   return {
     guest: guestVerifier,
     wavedash: notConfiguredVerifier('wavedash'),
     itch: notConfiguredVerifier('itch'),
+    bot: notConfiguredVerifier('bot'),
     ...overrides,
   }
 }
