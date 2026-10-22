@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createPublisher, PublisherError } from '../src/publisher/runner.ts'
@@ -14,6 +14,7 @@ import { createMemoryTableApi } from '../src/store/tables.ts'
 import { RoomHub } from '../src/hub.ts'
 import { loadConfig } from '../src/config.ts'
 import { setOwnerGames } from '../src/store/legacy.ts'
+import { writeFakeCli } from './fake-cli.ts'
 setOwnerGames('kekkai,monsterracer') // these tests exercise the owner-game behaviour
 
 const event = (type: string, object: object) => ({ type, data: { object } })
@@ -131,9 +132,8 @@ test('room hub enforces game cap without affecting other games', () => {
 test('publisher uses isolated HOME/tmp, redacts CLI output, requires tokens, and caps pending runs', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'publisher-isolation-'))
   try {
-    const bin = join(dir, 'fake-wavedash')
-    await writeFile(bin, '#!/bin/sh\necho "$HOME|$TMPDIR|$WAVEDASH_TOKEN"\necho "X-Wavedash-Token: $WAVEDASH_TOKEN"\nsleep 0.2\nexit 0\n')
-    await chmod(bin, 0o755)
+    const bin = await writeFakeCli(dir, 'fake-wavedash',
+      'console.log(`${env.HOME}|${env.TMPDIR}|${env.WAVEDASH_TOKEN}`)\nconsole.log(`X-Wavedash-Token: ${env.WAVEDASH_TOKEN}`)\nawait sleep(200)')
     const publisher = createPublisher({ dataDir: dir, home: join(dir, 'shared-home'), wavedashBin: bin, maxArtifactBytes: 1000, keepArtifacts: 2, runTimeoutMs: 5000, maxQueuedRuns: 2 })
     const req = (game: string) => ({ game, game_id: 'gameid1234', action: 'publish' as const, build_id: 'build1234' })
     await assert.rejects(publisher.startRun(req('a')), (e: unknown) => e instanceof PublisherError && e.status === 409)
@@ -142,7 +142,7 @@ test('publisher uses isolated HOME/tmp, redacts CLI output, requires tokens, and
     await assert.rejects(publisher.startRun(req('c'), 'secret-token-c'), (e: unknown) => e instanceof PublisherError && e.status === 429)
     await publisher.idle()
     const logA = (await publisher.getRun(a.id))!.log, logB = (await publisher.getRun(b.id))!.log
-    assert.match(logA, /\/home\|.*\/tmp\|\[REDACTED\]/)
+    assert.match(logA, /[\\/]home\|.*[\\/]tmp\|\[REDACTED\]/)
     assert.ok(!logA.includes('secret-token-a') && !logA.includes('secret-token-b'))
     assert.ok(!logB.includes('secret-token-a') && !logB.includes('secret-token-b'))
     assert.ok(!logA.includes('shared-home'))
@@ -154,9 +154,8 @@ test('publisher uses isolated HOME/tmp, redacts CLI output, requires tokens, and
 test('publisher: owner games keep the service HOME and the stored login (no token needed), are mirrored, and logs stream', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'publisher-owner-'))
   try {
-    const bin = join(dir, 'fake-wavedash')
-    await writeFile(bin, '#!/bin/sh\necho "home=$HOME tmp=${TMPDIR:-unset} tok=${WAVEDASH_TOKEN:-none}"\nsleep 0.4\necho done\nexit 0\n')
-    await chmod(bin, 0o755)
+    const bin = await writeFakeCli(dir, 'fake-wavedash',
+      'console.log(`home=${env.HOME} tmp=${env.TMPDIR ?? "unset"} tok=${env.WAVEDASH_TOKEN ?? "none"}`)\nawait sleep(400)\nconsole.log("done")')
     const tenant = createMemoryTableApi()
     const shared = join(dir, 'shared-home')
     const publisher = createPublisher({ dataDir: dir, home: shared, wavedashBin: bin, maxArtifactBytes: 1000, keepArtifacts: 2, runTimeoutMs: 5000, recorder: tenant })

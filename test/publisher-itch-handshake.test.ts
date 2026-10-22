@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir,mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import { createPublisher, ITCH_TARGET_RE } from '../src/publisher/runner.ts'
 import { createPublisherServer } from '../src/publisher/server.ts'
 import { createHandshakeUpdater, validateUpdateRequest } from '../src/publisher/handshake.ts'
 import { setOwnerGames } from '../src/store/legacy.ts'
+import { writeFakeCli } from './fake-cli.ts'
 setOwnerGames('kekkai,monsterracer') // these tests exercise the owner-game behaviour
 
 const KEY = 'k'.repeat(32)
@@ -19,14 +20,13 @@ let root: string, base: string, server: ReturnType<typeof createPublisherServer>
 let healthy = true, health: Server
 
 // Fake butler: logs "KEY|args"; `status` prints a channel table; `push` succeeds.
-const FAKE_BUTLER = `#!/bin/sh
-echo "$BUTLER_API_KEY|$*" >> "__CALLS__"
-case "$1" in
-  push) ls "$4" > /dev/null || exit 3; echo "Pushing"; exit 0 ;;
-  status) echo "Channel html5: up to date"; exit 0 ;;
-esac
-exit 9
-`
+// __CALLS__ is replaced by the JSON-quoted log path.
+const FAKE_BUTLER = [
+  "log(__CALLS__, `${env.BUTLER_API_KEY ?? ''}|${args.join(' ')}`)",
+  "if (args[0] === 'push') { if (!existsSync(args[3])) return 3; console.log('Pushing'); return 0 }",
+  "if (args[0] === 'status') { console.log('Channel html5: up to date'); return 0 }",
+  'return 9',
+].join('\n')
 
 async function api(path: string, init: Omit<RequestInit, 'body'> & { body?: BodyInit | Buffer } = {}) {
   const headers = new Headers(init.headers)
@@ -54,9 +54,7 @@ async function waitRun(id: string) {
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'pub-itch-'))
   calls = join(root, 'calls.log')
-  const bin = join(root, 'butler')
-  await writeFile(bin, FAKE_BUTLER.replaceAll('__CALLS__', calls))
-  await chmod(bin, 0o755)
+  const bin = await writeFakeCli(root, 'butler', FAKE_BUTLER.replaceAll('__CALLS__', JSON.stringify(calls)))
   await mkdir(join(root, 'home'), { recursive: true })
   health = createServer((_q, res) => { res.writeHead(healthy ? 200 : 503); res.end(healthy ? '{"ok":true,"rooms":0}' : '{"ok":false}') })
   await new Promise<void>(r => health.listen(0, '127.0.0.1', r))
@@ -102,7 +100,7 @@ describe('itch adapter', () => {
     assert.equal(done.status, 'ok')
     assert.ok(!JSON.stringify(done).includes('ITCHKEY1234'))
     const log = await readFile(calls, 'utf8')
-    assert.match(log, /^ITCHKEY1234\|push --userversion v1 .*\/dist u\/g:html5$/m)
+    assert.match(log, /^ITCHKEY1234\|push --userversion v1 .*[\\/]dist u\/g:html5$/m)
   })
   test('status via butler status', async () => {
     const r = await api('/itch/status?target=u/g:html5', { headers: { 'x-itch-token': 'ITCHKEY1234' } })

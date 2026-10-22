@@ -230,7 +230,9 @@ export function createPublisher(cfg: PublisherConfig) {
         run.log = clip(run.log + scrub(partial.slice(0, cut), extraEnv))
         partial = partial.slice(cut)
       }
-      const child = spawn(bin, args, { cwd, shell: false, env })
+      // A CLI given as a Node script (.js/.mjs/.cjs) runs under this Node: no shebang, so it also starts on Windows.
+      const [cmd, argv] = /\.[cm]?js$/i.test(bin) ? [process.execPath, [bin, ...args]] : [bin, args]
+      const child = spawn(cmd, argv, { cwd, shell: false, env })
       const timer = setTimeout(() => { out += '\n[publisher] timeout, killing the CLI\n'; child.kill('SIGKILL') }, opts.timeoutMs ?? cfg.runTimeoutMs)
       const feed = (b: Buffer) => { const s = b.toString('utf8'); out += s; partial += s; flush(false) }
       child.stdout.on('data', feed)

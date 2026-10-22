@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir,mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Server } from 'node:http'
@@ -11,6 +11,7 @@ import { createProjectArgv, parseCreateArgsEnv, parseProjectId } from '../src/pu
 import { createPublisher } from '../src/publisher/runner.ts'
 import { createPublisherServer } from '../src/publisher/server.ts'
 import { isLegacyGame, setOwnerGames } from '../src/store/legacy.ts'
+import { writeFakeCli } from './fake-cli.ts'
 
 describe('Wavedash project helpers', () => {
   test('substitutes argv elements without changing their boundaries or template', () => {
@@ -53,14 +54,17 @@ const TEMPLATE = ['projects', 'create', '--slug', '{slug}', '--name', '{name}']
 setOwnerGames('kekkai') // kekkai is an owner game: its runs keep cfg.home, the status probe must not
 
 // Logs "$WAVEDASH_TOKEN|$HOME|$*" per call. The __FAIL__ marker file makes the create command leak the token and fail.
-const FAKE = `#!/bin/sh
-echo "$WAVEDASH_TOKEN|$HOME|$*" >> "__LOG__"
-case "$1 $2" in
-  "auth status") if [ -n "$WAVEDASH_TOKEN" ]; then echo "Authenticated"; exit 0; else echo "Not authenticated"; exit 1; fi ;;
-  "projects create") if [ -f "__FAIL__" ]; then echo "boom: $WAVEDASH_TOKEN"; exit 1; fi; echo '{"id":"AbCd1234Ef"}'; exit 0 ;;
-esac
-exit 9
-`
+// __LOG__ and __FAIL__ are replaced by JSON-quoted paths.
+const FAKE = [
+  "log(__LOG__, `${env.WAVEDASH_TOKEN ?? ''}|${env.HOME}|${args.join(' ')}`)",
+  "const cmd = `${args[0]} ${args[1]}`",
+  "if (cmd === 'auth status') { if (env.WAVEDASH_TOKEN) { console.log('Authenticated'); return 0 } console.log('Not authenticated'); return 1 }",
+  "if (cmd === 'projects create') {",
+  "  if (existsSync(__FAIL__)) { console.log(`boom: ${env.WAVEDASH_TOKEN ?? ''}`); return 1 }",
+  `  console.log('{"id":"AbCd1234Ef"}'); return 0`,
+  "}",
+  'return 9',
+].join('\n')
 
 describe('Wavedash project routes (fake CLI)', () => {
   let root: string, log: string, failMarker: string, home: string
@@ -93,9 +97,7 @@ describe('Wavedash project routes (fake CLI)', () => {
     log = join(root, 'calls.log')
     failMarker = join(root, 'fail')
     home = join(root, 'home')
-    const bin = join(root, 'wavedash')
-    await writeFile(bin, FAKE.replaceAll('__LOG__', log).replaceAll('__FAIL__', failMarker))
-    await chmod(bin, 0o755)
+    const bin = await writeFakeCli(root, 'wavedash', FAKE.replaceAll('__LOG__', JSON.stringify(log)).replaceAll('__FAIL__', JSON.stringify(failMarker)))
     await mkdir(home, { recursive: true })
     const cfg = { dataDir: root, home, wavedashBin: bin, maxArtifactBytes: 200_000, keepArtifacts: 2, runTimeoutMs: 10_000 }
     publisher = createPublisher({ ...cfg, wavedashCreateArgs: TEMPLATE })
@@ -139,7 +141,7 @@ describe('Wavedash project routes (fake CLI)', () => {
     const r = await create({ game: 'creator-game' })
     assert.equal(r.status, 201)
     const [, childHome] = (await lastLine()).split('|')
-    const m = childHome!.match(/^(.*)\/work\/([0-9a-f-]{36})\/home$/)
+    const m = childHome!.match(/^(.*)[\\/]work[\\/]([0-9a-f-]{36})[\\/]home$/)
     assert.ok(m, `unexpected HOME ${childHome}`)
     assert.equal(m[1], root)
     assert.notEqual(childHome, home)
@@ -185,7 +187,7 @@ describe('Wavedash project routes (fake CLI)', () => {
     assert.equal(tok, TOKEN)
     assert.equal(args, 'auth status')
     assert.notEqual(childHome, home)
-    assert.match(childHome!, /\/work\/[0-9a-f-]{36}\/home$/)
+    assert.match(childHome!, /[\\/]work[\\/][0-9a-f-]{36}[\\/]home$/)
   })
 
   test('a missing bearer → 401 on both routes', async () => {

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -10,23 +10,30 @@ import type { AddressInfo } from 'node:net'
 import { createPublisher, parseBuildId } from '../src/publisher/runner.ts'
 import { createPublisherServer } from '../src/publisher/server.ts'
 import { setOwnerGames } from '../src/store/legacy.ts'
+import { writeFakeCli } from './fake-cli.ts'
 setOwnerGames('kekkai,monsterracer,kart') // these tests exercise the owner-game behaviour
 
 const KEY = 'k'.repeat(32)
 let root: string, base: string, server: ReturnType<typeof createPublisherServer>, calls: string
 
 // Fake CLI: logs "HOME|CI|args" per call; "auth status" depends on $HOME/logged-in; push prints a build id.
-const FAKE = `#!/bin/sh
-echo "$HOME|$CI|$*" >> "__CALLS__"
-case "$1 $2" in
-  "auth status") if [ -f "$HOME/logged-in" ]; then echo "✓ Authenticated (via stored credentials)"; exit 0; else echo "Not authenticated"; exit 1; fi ;;
-  "build push") ls dist > /dev/null || exit 3; cat wavedash.toml >> "__CALLS__"; echo "Uploading..."; echo "Build ID: bld_abc123XYZ"; echo "Playtest: https://wavedash.com/x"; exit 0 ;;
-esac
-case "$1" in
-  publish) echo "Published $2"; exit 0 ;;
-esac
-exit 9
-`
+// __CALLS__ is replaced by the JSON-quoted log path.
+const FAKE = [
+  "log(__CALLS__, `${env.HOME}|${env.CI}|${args.join(' ')}`)",
+  "const cmd = `${args[0]} ${args[1]}`",
+  "if (cmd === 'auth status') {",
+  "  if (existsSync(join(env.HOME, 'logged-in'))) { console.log('✓ Authenticated (via stored credentials)'); return 0 }",
+  "  console.log('Not authenticated'); return 1",
+  "}",
+  "if (cmd === 'build push') {",
+  "  if (!existsSync('dist')) return 3",
+  "  appendFileSync(__CALLS__, readFileSync('wavedash.toml', 'utf8'))",
+  "  console.log('Uploading...'); console.log('Build ID: bld_abc123XYZ'); console.log('Playtest: https://wavedash.com/x'); return 0",
+  "}",
+  "if (args[0] === 'publish') { console.log(`Published ${args[1]}`); return 0 }",
+  'return 9',
+].join('\n')
+const fake = (dir: string, logFile: string) => writeFakeCli(dir, 'wavedash', FAKE.replaceAll('__CALLS__', JSON.stringify(logFile)))
 
 async function api(path: string, init: Omit<RequestInit, 'body'> & { auth?: boolean; body?: BodyInit | Buffer } = {}) {
   const headers = new Headers(init.headers)
@@ -56,9 +63,7 @@ async function waitRun(id: string) {
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'pub-'))
   calls = join(root, 'calls.log')
-  const bin = join(root, 'wavedash')
-  await writeFile(bin, FAKE.replaceAll('__CALLS__', calls))
-  await chmod(bin, 0o755)
+  const bin = await fake(root, calls)
   await mkdir(join(root, 'home'), { recursive: true })
   const publisher = createPublisher({
     dataDir: root, home: join(root, 'home'), wavedashBin: bin, maxArtifactBytes: 200_000, keepArtifacts: 2, runTimeoutMs: 10_000,
@@ -166,9 +171,7 @@ describe('publisher -> tenant mirror', () => {
   test('every run is mirrored into etc_deploy_runs with its request id; a dead tenant never fails a run', async () => {
     const { createMemoryTableApi } = await import('../src/store/tables.ts')
     const dir = await mkdtemp(join(tmpdir(), 'pub-rec-'))
-    const bin = join(dir, 'wavedash')
-    await writeFile(bin, FAKE.replaceAll('__CALLS__', join(dir, 'calls.log')))
-    await chmod(bin, 0o755)
+    const bin = await fake(dir, join(dir, 'calls.log'))
     await mkdir(join(dir, 'home'), { recursive: true })
     const tenant = createMemoryTableApi()
     const mk = (recorder: typeof tenant) => createPublisher({
@@ -200,14 +203,8 @@ describe('publisher -> tenant mirror', () => {
 describe('publisher -> per-request Wavedash token', () => {
   test('the key reaches one CLI child as WAVEDASH_TOKEN, is never stored, and a malformed one is refused', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pub-tok-'))
-    const bin = join(dir, 'wavedash')
     const seen = join(dir, 'seen.log')
-    await writeFile(bin, `#!/bin/sh
-echo "tok=$WAVEDASH_TOKEN" >> "${seen}"
-echo "Build ID: bld_tok123456"
-exit 0
-`)
-    await chmod(bin, 0o755)
+    const bin = await writeFakeCli(dir, 'wavedash', `log(${JSON.stringify(seen)}, 'tok=' + env.WAVEDASH_TOKEN)\nconsole.log('Build ID: bld_tok123456')`)
     await mkdir(join(dir, 'home'), { recursive: true })
     const p = createPublisher({
       dataDir: dir, home: join(dir, 'home'), wavedashBin: bin, maxArtifactBytes: 200_000, keepArtifacts: 2, runTimeoutMs: 10_000,
@@ -229,9 +226,7 @@ describe('publisher -> games come with the request (no games.json)', () => {
   const GID = 'j97abcdef0123456789'
   async function setup() {
     const dir = await mkdtemp(join(tmpdir(), 'pub-dyn-'))
-    const bin = join(dir, 'wavedash')
-    await writeFile(bin, FAKE.replaceAll('__CALLS__', join(dir, 'calls.log')))
-    await chmod(bin, 0o755)
+    const bin = await fake(dir, join(dir, 'calls.log'))
     await mkdir(join(dir, 'home'), { recursive: true })
     const p = createPublisher({ dataDir: dir, home: join(dir, 'home'), wavedashBin: bin, maxArtifactBytes: 200_000, keepArtifacts: 2, runTimeoutMs: 10_000 })
     const { Readable } = await import('node:stream')

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir,mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -10,22 +10,26 @@ import { createPublisher } from '../src/publisher/runner.ts'
 import { createPublisherServer } from '../src/publisher/server.ts'
 import { parseCreatedId, parseExisting, portalJson, validateCatalog } from '../src/publisher/catalog.ts'
 import { setOwnerGames } from '../src/store/legacy.ts'
+import { writeFakeCli } from './fake-cli.ts'
 setOwnerGames('kekkai,monsterracer') // these tests exercise the owner-game behaviour
 
 const KEY = 'k'.repeat(32)
 let root: string, base: string, server: ReturnType<typeof createPublisherServer>, calls: string
 
 // Fake CLI: logs "token|args" per call. `achievement list --json` knows one achievement; `stat create` prints an id.
-const FAKE = `#!/bin/sh
-echo "\${WAVEDASH_TOKEN:-none}|$*" >> "__CALLS__"
-case "$1 $2" in
-  "achievement list") echo '[{"id":"ach_77","identifier":"already_there"}]'; exit 0 ;;
-  "stat create") if [ "$4" = "dup_stat" ]; then echo "error: stat already exists"; exit 1; fi; if [ "$4" = "bad_stat" ]; then echo "boom"; exit 2; fi; echo "Created stat (id: st_$4)"; exit 0 ;;
-  "achievement create") echo ok; exit 0 ;;
-  "achievement update") echo ok; exit 0 ;;
-esac
-exit 9
-`
+// __CALLS__ is replaced by the JSON-quoted log path.
+const FAKE = [
+  "log(__CALLS__, `${env.WAVEDASH_TOKEN || 'none'}|${args.join(' ')}`)",
+  "const cmd = `${args[0]} ${args[1]}`",
+  `if (cmd === 'achievement list') { console.log('[{"id":"ach_77","identifier":"already_there"}]'); return 0 }`,
+  "if (cmd === 'stat create') {",
+  "  if (args[3] === 'dup_stat') { console.log('error: stat already exists'); return 1 }",
+  "  if (args[3] === 'bad_stat') { console.log('boom'); return 2 }",
+  "  console.log(`Created stat (id: st_${args[3]})`); return 0",
+  "}",
+  "if (cmd === 'achievement create' || cmd === 'achievement update') { console.log('ok'); return 0 }",
+  'return 9',
+].join('\n')
 
 const CATALOG = {
   stats: [{ identifier: 'wins', display_name: 'Wins' }, { identifier: 'dup_stat', display_name: 'Dup' }],
@@ -54,9 +58,7 @@ async function waitRun(id: string) {
 before(async () => {
   root = await mkdtemp(join(tmpdir(), 'pub-cat-'))
   calls = join(root, 'calls.log')
-  const bin = join(root, 'wavedash')
-  await writeFile(bin, FAKE.replaceAll('__CALLS__', calls))
-  await chmod(bin, 0o755)
+  const bin = await writeFakeCli(root, 'wavedash', FAKE.replaceAll('__CALLS__', JSON.stringify(calls)))
   await mkdir(join(root, 'home'), { recursive: true })
   const publisher = createPublisher({ dataDir: root, home: join(root, 'home'), wavedashBin: bin, maxArtifactBytes: 200_000, keepArtifacts: 2, runTimeoutMs: 10_000 })
   server = createPublisherServer(publisher, { key: KEY })
