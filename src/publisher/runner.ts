@@ -256,20 +256,22 @@ export function createPublisher(cfg: PublisherConfig) {
   async function execute(run: Run, req: RunRequest, game: GameConfig, env: Record<string, string>): Promise<void> {
     const work = join(dirs.work, run.id)
     await mkdir(join(work, 'dist'), { recursive: true })
+    // The final status is published only once the work dir is gone: a poller that sees ok/failed sees a clean disk.
+    let status: RunStatus = 'failed'
     try {
       if (run.platform === 'itch') {
         const code = await untar(join(dirs.artifacts, run.game, run.artifact!), join(work, 'dist'), run)
-        if (code !== 0) { run.exit_code = code; run.status = 'failed'; return }
+        if (code !== 0) { run.exit_code = code; status = 'failed'; return }
         const r = await exec(['push', '--userversion', run.message, join(work, 'dist'), game.game_id], work, run, env, cfg.butlerBin ?? 'butler')
         run.exit_code = r.code
-        run.status = r.code === 0 ? 'ok' : 'failed'
+        status = r.code === 0 ? 'ok' : 'failed'
         return
       }
       await writeFile(join(work, 'wavedash.toml'), `game_id = "${game.game_id}"\nupload_dir = "./dist"\n`)
       let result: { code: number | null; out: string }
       if (run.action === 'push') {
         const code = await untar(join(dirs.artifacts, run.game, run.artifact!), join(work, 'dist'), run)
-        if (code !== 0) { run.exit_code = code; run.status = 'failed'; return }
+        if (code !== 0) { run.exit_code = code; status = 'failed'; return }
         result = await exec(['build', 'push', '-c', join(work, 'wavedash.toml'), '-m', run.message], work, run, env)
         run.build_id = parseBuildId(result.out)
         if (result.code === 0 && !run.build_id) run.log += '\n[publisher] pushed, but the build id could not be read from the output: use the id shown in the Wavedash developer portal for Publish.\n'
@@ -281,9 +283,10 @@ export function createPublisher(cfg: PublisherConfig) {
         result = await exec(args, work, run, env)
       }
       run.exit_code = result.code
-      run.status = result.code === 0 ? 'ok' : 'failed'
+      status = result.code === 0 ? 'ok' : 'failed'
     } finally {
       await rm(work, { recursive: true, force: true }).catch(() => undefined)
+      run.status = status
     }
   }
 
