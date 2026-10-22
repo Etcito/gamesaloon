@@ -1,0 +1,2 @@
+# Store LF in the repo and check out LF, whatever the machine autocrlf setting (Windows system config sets autocrlf=true).
+* text=auto eol=lf
