@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import type { Readable } from 'node:stream'
 import { achievementArgs, parseCreatedId, parseExisting, planCommands, portalJson, validateCatalog } from './catalog.ts'
 import type { Catalog } from './catalog.ts'
@@ -243,7 +243,8 @@ export function createPublisher(cfg: PublisherConfig) {
   }
   function untar(archive: string, dest: string, run: Run): Promise<number | null> {
     return new Promise(resolve => {
-      const child = spawn('tar', ['-xzf', archive, '-C', dest, '--no-same-owner'], { shell: false })
+      // Run inside dest with a relative archive path: GNU tar reads "C:\..." as host "C" (Git for Windows' tar).
+      const child = spawn('tar', ['-xzf', relative(dest, archive), '--no-same-owner'], { cwd: dest, shell: false })
       child.stderr.on('data', (b: Buffer) => { run.log = clip(scrub(run.log + b.toString('utf8'))) })
       child.on('error', () => resolve(null))
       child.on('close', code => resolve(code))
