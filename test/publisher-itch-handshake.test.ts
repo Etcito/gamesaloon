@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Etcito
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir,mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir,mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -147,5 +147,28 @@ describe('handshake update request', () => {
     healthy = true
     assert.equal(blocked.status, 409)
     assert.match(blocked.json.error, /not healthy/)
+  })
+  test('private repo: an archive + sha from the backoffice is stored and handed to the updater (no credential anywhere)', async () => {
+    const sha = 'a'.repeat(40)
+    const repo = encodeURIComponent('https://github.com/Etcito/gamesaloon')
+    const archive = await tarball({ 'package.json': '{}', 'src/main.ts': '' })
+    const gz = { 'content-type': 'application/gzip' }
+    assert.equal((await fetch(`${base}/handshake/update?repo=${repo}&ref=main&sha=${sha}`, { method: 'POST', headers: gz, body: new Uint8Array(archive) })).status, 401)
+    const badSha = await api(`/handshake/update?repo=${repo}&ref=main&sha=abc`, { method: 'POST', headers: gz, body: archive })
+    assert.equal(badSha.status, 400)
+    assert.equal((await api(`/handshake/update?repo=file%3A%2F%2F%2Fetc&ref=main&sha=${sha}`, { method: 'POST', headers: gz, body: archive })).status, 400)
+    const ok = await api(`/handshake/update?repo=${repo}&ref=main&sha=${sha}`, { method: 'POST', headers: gz, body: archive })
+    assert.equal(ok.status, 202)
+    assert.equal(ok.json.state, 'queued')
+    assert.equal(ok.json.sha, sha)
+    const req = await readFile(join(root, 'handshake', 'request.env'), 'utf8')
+    const m = /^ID=(\d+)\nREPO=https:\/\/github\.com\/Etcito\/gamesaloon\nREF=main\nSHA=a{40}\nSRC=(source-\d+\.tar\.gz)\n$/.exec(req)
+    assert.ok(m, req)
+    assert.equal(m[2], `source-${m[1]}.tar.gz`)
+    assert.deepEqual(await readFile(join(root, 'handshake', m[2]!)), archive)
+    // busy: refused cleanly, the uploaded body is drained and not kept
+    assert.equal((await api(`/handshake/update?repo=${repo}&ref=main&sha=${sha}`, { method: 'POST', headers: gz, body: archive })).status, 409)
+    const files = await readdir(join(root, 'handshake'))
+    assert.deepEqual(files.filter(f => f.startsWith('source-') || f.includes('.part')), [m[2]])
   })
 })

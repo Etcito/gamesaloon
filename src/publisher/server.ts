@@ -63,6 +63,10 @@ export function createPublisherServer(publisher: Publisher, opts: { key: string;
       if (req.method === 'GET' && path === '/itch/status') return send(res, 200, await publisher.itchStatus(url.searchParams.get('target') ?? '', itchToken(req)))
       if (opts.handshake && req.method === 'GET' && path === '/handshake/status') return send(res, 200, await opts.handshake.status())
       if (opts.handshake && req.method === 'POST' && path === '/handshake/update') {
+        if ((req.headers['content-type'] ?? '').startsWith('application/gzip')) {
+          const q = url.searchParams
+          return send(res, 202, await opts.handshake.startFromArchive(q.get('repo'), q.get('ref'), q.get('sha'), req))
+        }
         const b = await readJson(req)
         return send(res, 202, await opts.handshake.start(b.repo, b.ref))
       }

@@ -1,0 +1,76 @@
+--- a/deploy/publisher/handshake-update.sh
++++ b/deploy/publisher/handshake-update.sh
+@@ -1,6 +1,8 @@
+ #!/bin/sh
+ # Root updater for kart-rooms (Handshake). Started by etcito-handshake-update.path when the publisher drops
+ # /var/lib/etcito-publisher/handshake/request.env (ID, REPO, REF - validated by the publisher AND again here).
++# Private repository: the request also carries SHA + SRC (source-<ID>.tar.gz in $DATA, a `git archive` of that commit
++# fetched by the backoffice with its GitHub token); the tree is then extracted from it and git fetch is skipped.
+ #   fetch ref -> new tree -> npm install --omit=dev -> backup /opt/kart-rooms -> swap -> restart kart-rooms
+ #   -> /health must answer -> else automatic rollback to the backup.
+ # It touches only /opt/kart-rooms*, the kart-rooms unit and its own exchange folder. Never nginx, never the CRM.
+@@ -14,7 +16,7 @@
+ LOG="$DATA/update.log"
+ export HOME="${HOME:-/root}" GIT_TERMINAL_PROMPT=0 LC_ALL=C
+ 
+-ID=""; REPO=""; REF=""; SHA=""; STARTED=$(( $(date +%s) * 1000 ))
++ID=""; REPO=""; REF=""; SHA=""; SRC=""; SRC_OK=""; STARTED=$(( $(date +%s) * 1000 ))
+ say() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "$LOG"; }
+ status() { # state message
+   node -e '
+@@ -26,11 +28,11 @@
+ }
+ health_ok() { curl -fsS -m 3 "$HEALTH" 2>/dev/null | grep -q '"ok":true'; }
+ wait_health() { i=0; while [ $i -lt 25 ]; do if systemctl is-active --quiet "$UNIT" && health_ok; then return 0; fi; i=$((i+1)); sleep 1; done; return 1; }
+-fail() { say "FAILED: $*"; status failed "$*"; exit 1; }
++fail() { say "FAILED: $*"; [ -n "$SRC_OK" ] && rm -f "$DATA/$SRC"; status failed "$*"; exit 1; }
+ 
+ [ -f "$REQ" ] || exit 0
+ : > "$LOG"
+-for k in ID REPO REF; do
++for k in ID REPO REF SHA SRC; do
+   v=$(sed -n "s/^$k=//p" "$REQ" | head -n 1)
+   eval "$k=\$v"
+ done
+@@ -39,21 +41,36 @@
+ printf '%s' "$REPO" | grep -Eq '^https://[A-Za-z0-9][A-Za-z0-9.-]{0,100}/[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$' || fail "invalid repo"
+ printf '%s' "$REF" | grep -Eq '^[A-Za-z0-9._][A-Za-z0-9._/-]{0,99}$' || fail "invalid ref"
+ case "$REPO$REF" in *..*) fail "invalid repo/ref" ;; esac
++if [ -n "$SRC" ]; then
++  printf '%s' "$SRC" | grep -Eq "^source-$ID\.tar\.gz\$" || { SRC=""; fail "invalid source archive name"; }
++  SRC_OK=1
++  printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "invalid sha"
++  [ -f "$DATA/$SRC" ] && [ ! -L "$DATA/$SRC" ] || fail "source archive missing"
++fi
+ status running "starting"
+ say "update $UNIT from $REPO @ $REF"
+ 
+ health_ok || fail "Handshake not healthy before the update: aborting (nothing changed)"
+ 
+ CACHE="$DATA/src.git"
+-[ -d "$CACHE" ] || git init --bare -q "$CACHE" || fail "cannot init the git cache"
+-say "fetch"
+-git -C "$CACHE" fetch -q --depth 1 --no-tags "$REPO" "$REF" >> "$LOG" 2>&1 || fail "git fetch failed (repo/ref unreachable)"
+-SHA=$(git -C "$CACHE" rev-parse FETCH_HEAD) || fail "cannot resolve the fetched commit"
++if [ -n "$SRC" ]; then
++  say "source archive sent by the backoffice (no git fetch here)"
++else
++  [ -d "$CACHE" ] || git init --bare -q "$CACHE" || fail "cannot init the git cache"
++  say "fetch"
++  git -C "$CACHE" fetch -q --depth 1 --no-tags "$REPO" "$REF" >> "$LOG" 2>&1 || fail "git fetch failed (repo/ref unreachable)"
++  SHA=$(git -C "$CACHE" rev-parse FETCH_HEAD) || fail "cannot resolve the fetched commit"
++fi
+ say "commit $SHA"
+ 
+ NEW="$APP.new-$ID"
+ rm -rf "$NEW"; mkdir -p "$NEW" || fail "cannot create $NEW"
+-git -C "$CACHE" archive FETCH_HEAD | tar -x -C "$NEW" --no-same-owner || { rm -rf "$NEW"; fail "cannot export the tree"; }
++if [ -n "$SRC" ]; then
++  tar -xzf "$DATA/$SRC" -C "$NEW" --no-same-owner --no-same-permissions >> "$LOG" 2>&1 || { rm -rf "$NEW"; fail "cannot extract the source archive"; }
++  rm -f "$DATA/$SRC"; SRC_OK=""
++else
++  git -C "$CACHE" archive FETCH_HEAD | tar -x -C "$NEW" --no-same-owner || { rm -rf "$NEW"; fail "cannot export the tree"; }
++fi
+ [ -f "$NEW/package.json" ] && [ -f "$NEW/src/main.ts" ] || { rm -rf "$NEW"; fail "the ref is not a Handshake tree (package.json / src/main.ts missing)"; }
+ [ -d "$APP/node_modules" ] && cp -a "$APP/node_modules" "$NEW/node_modules"
+ say "npm install --omit=dev"
