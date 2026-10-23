@@ -50,6 +50,7 @@ export function playerStoreContract(label: string, makeStore: StoreFactory): voi
       ['rankOf', s => s.rankOf('unknown', 'game'), 'not_found'],
       ['setDisplayName', s => s.setDisplayName('unknown', 'Renamed'), 'not_found'],
       ['recordMatch', s => s.recordMatch(matchRecord('m', 'unknown-a', 'unknown-b')), 'resolve'],
+      ['getMatch', s => s.getMatch('unknown'), 'resolve'],
       ['reapRankedLocks', s => s.reapRankedLocks(new Set()), 'resolve'],
     ]
 
@@ -275,6 +276,18 @@ export function playerStoreContract(label: string, makeStore: StoreFactory): voi
       const b = await newPlayer(store, 'b')
       assert.deepEqual(await store.recordMatch(matchRecord('rec-1', a.player_id, b.player_id)), { applied: true })
       assert.deepEqual(await store.recordMatch(matchRecord('rec-1', a.player_id, b.player_id)), { applied: false })
+    })
+
+    test('getMatch returns the first recorded record, null for an unknown id', async () => {
+      const store = await makeStore()
+      const a = await newPlayer(store, 'a')
+      const b = await newPlayer(store, 'b')
+      const first = matchRecord('rec-2', a.player_id, b.player_id)
+      assert.equal(await store.getMatch('rec-2'), null)
+      await store.recordMatch(first)
+      await store.recordMatch({ ...first, reason: 'disagreement' })
+      assert.deepEqual(await store.getMatch('rec-2'), first)
+      assert.equal(await store.getMatch('rec-404'), null)
     })
 
     test('reapRankedLocks clears stale locks and keeps active ones', async () => {

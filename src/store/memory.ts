@@ -316,6 +316,12 @@ export function createMemoryStore(opts: { now?: () => number; uuid?: () => strin
       return { applied: true }
     },
 
+    async getMatch(matchId) {
+      stringArgument(matchId, 'match id')
+      const record = matches.get(matchId)
+      return record ? structuredClone(record) : null
+    },
+
     async reapRankedLocks(active) {
       let count = 0
       for (const player of players.values()) {

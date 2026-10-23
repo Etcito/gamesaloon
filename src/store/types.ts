@@ -39,6 +39,8 @@ export interface PlayerStore {
   setDisplayName(playerId: string, name: string): Promise<Player>
   /** Idempotent by match_id: a repeat resolves `{ applied: false }` and keeps the first record. */
   recordMatch(record: MatchRecord): Promise<{ applied: boolean }>
+  /** The record stored by `recordMatch`, or null when that match id was never recorded. */
+  getMatch(matchId: string): Promise<MatchRecord | null>
   /** Clears every open ranked lock whose match_id is not in `active`; resolves the count cleared. */
   reapRankedLocks(active: ReadonlySet<string>): Promise<number>
 }

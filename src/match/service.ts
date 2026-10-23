@@ -233,6 +233,7 @@ export class MatchService implements RelayExtension {
         else this.error(conn, 'not_queued')
       } else if (parsed.t === 'ladder') await this.ladderPage(conn, parsed.page)
       else if (parsed.t === 'result') await this.result(conn, parsed.match_id, parsed.outcome)
+      else if (parsed.t === 'match_status') await this.matchStatus(conn, parsed.match_id)
     } catch (err) {
       if (isEconomyMessage(parsed)) return this.economyError(conn, parsed, err)
       if (isOnlineMessage(parsed)) return this.onlineError(conn, parsed, err)
@@ -755,6 +756,28 @@ export class MatchService implements RelayExtension {
     } catch {
       this.deps.log('error', `[match] onMatchEnd failed for ${match.match_id}`)
     }
+  }
+
+  /** `match_end` of one of MY recorded matches, rebuilt from its record: what a client that came back after the
+   *  resume window was missed. A match still in play answers `in_match` (resume it instead). */
+  private async matchStatus(conn: string, matchId: string): Promise<void> {
+    const me = this.authed.get(conn)
+    if (!me) return this.error(conn, 'auth_required')
+    const live = this.matches.get(matchId)
+    if (live && live.players.includes(me.player_id)) return this.error(conn, 'in_match')
+    const store = this.router.resolve(me.game ?? undefined)?.store
+    if (!store) return this.error(conn, 'unknown_match')
+    const record = await st(store.getMatch(matchId))
+    const seat = record ? record.players.indexOf(me.player_id) : -1
+    if (!record || seat < 0) return this.error(conn, 'unknown_match')
+    const score = record.score_a === null ? null : seat === 0 ? record.score_a : 1 - record.score_a
+    const r = record.ratings?.[seat]
+    this.send(conn, {
+      t: 'match_end', match_id: record.match_id, status: record.status, reason: record.reason,
+      outcome: score === null ? null : OUTCOME(score),
+      ...(r ? { rating: { before: r.before, after: r.after, games: r.games, placement: r.placement, tier: tierOf(r.after) } } : {}),
+      weight: record.weight, duration_ms: record.duration_ms, rewardable: record.rewardable,
+    })
   }
 
   private drop(match: ActiveMatch): void {

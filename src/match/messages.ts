@@ -8,7 +8,7 @@ import type { OnlineClientMessage } from '../online/messages.ts'
 
 export const ECONOMY_CLIENT_TYPES = ['eco_get', 'eco_products', 'eco_reward', 'eco_buy', 'eco_open', 'eco_wavedash', 'eco_stripe'] as const
 export const ECONOMY_SERVER_TYPES = ['eco_state', 'eco_products', 'eco_reward', 'eco_bought', 'eco_opened', 'eco_purchase', 'eco_checkout'] as const
-export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', 'ladder', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
+export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', 'ladder', 'match_status', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
 export const MATCH_SERVER_TYPES = ['authed', 'match_queued', 'match_unqueued', 'match', 'result_ack', 'match_end', 'ladder', ...ECONOMY_SERVER_TYPES, ...ONLINE_SERVER_TYPES] as const
 export const MATCH_ERROR_CODES = [
   'auth_required', 'already_authed', 'auth_failed', 'auth_unavailable',
@@ -39,6 +39,8 @@ export type MatchClientMessage =
   | { t: 'match_unqueue' }
   | { t: 'result'; match_id: string; outcome: Outcome }
   | { t: 'ladder'; page: number }
+  /** Result of one of MY finished matches (a client that came back too late to resume it). */
+  | { t: 'match_status'; match_id: string }
   | { t: 'eco_get'; op?: string }
   | { t: 'eco_products'; op?: string }
   | { t: 'eco_reward'; op?: string; reward_id: string }
@@ -157,6 +159,13 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
         return bad('result.outcome must be win, loss or draw')
       }
       return { t: 'result', match_id, outcome }
+    }
+    case 'match_status': {
+      const { match_id } = value
+      if (typeof match_id !== 'string' || match_id.length < 1 || match_id.length > 128) {
+        return bad('match_status.match_id must be 1..128 chars')
+      }
+      return { t: 'match_status', match_id }
     }
   }
 }

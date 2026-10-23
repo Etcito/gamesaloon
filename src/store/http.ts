@@ -11,6 +11,7 @@ import { StoreError } from './errors.ts'
 import { DEFAULT_ELO, nextRating, tierOf } from './elo.ts'
 import type { EloParams } from './elo.ts'
 import type { Filter, Row, TableApi } from './tables.ts'
+import type { MatchRecord } from '../hooks.ts'
 import type { OpenPackResult, PacksResult, Player, PlayerStore, RankedResult, RatingChange, WalletResult } from './types.ts'
 
 const PAGE = 500
@@ -356,6 +357,18 @@ export function createHttpPlayerStore(api: TableApi, opts: { now?: () => number;
         reason: record.reason, ended_at: record.ended_at, record: JSON.stringify(record),
       })
       return { applied: r !== 'conflict' }
+    },
+
+    async getMatch(matchId) {
+      stringArgument(matchId, 'match id')
+      const row = await one(T.matches, [{ field: 'match_id', op: 'eq', value: matchId }])
+      if (!row || typeof row.record !== 'string') return null
+      try {
+        const record = JSON.parse(row.record) as MatchRecord
+        return record && record.match_id === matchId && Array.isArray(record.players) ? record : null
+      } catch {
+        return null
+      }
     },
 
     async reapRankedLocks(active) {
