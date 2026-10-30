@@ -1,11 +1,11 @@
 # GameNet relay protocol reference
 
-Source: the implementation in `src/relay/` (`protocol.ts`, `hub.ts`, `endpoint.ts`); scenario tests in `test/relay.test.ts` and `test/relay.hub.test.ts`. Fields below are JSON fields; all message types use `t`.
+Source: the implementation in `src/relay/` (`protocol.ts`, `hub.ts`, `endpoint.ts`, `groups.ts`, `gameQueues.ts`, `binary.ts`) and `src/config.ts`; scenario tests in `test/relay.test.ts`, `test/relay.hub.test.ts`, and `test/relay.zones.test.ts`. Fields below are JSON fields; all message types use `t`.
 
 ## 1. Endpoint
 
 - The source comments identify the WebSocket route as `/ws`; `new WebSocketServer({ server })` does not configure a path filter. There are no relay query parameters or query handling; the server attaches to HTTP upgrades without examining their URL.
-- The server does not set a `maxPayload` option. Application input is limited to 4 KiB (`MAX_MSG_BYTES`). Binary or larger messages count as invalid and are ignored; the tenth invalid message closes the socket.
+- The server does not set a `maxPayload` option. Text relay messages are limited to 4 KiB (`MAX_MSG_BYTES`). Invalid text messages count as invalid and are ignored; the tenth invalid message closes the socket. Binary frames are handled for started zone-room members as described in section 4; elsewhere they count as invalid.
 - Protocol field: `t`.
 - WebSocket heartbeat: every 30,000 ms the server sends a control ping; a pong marks the socket alive. A socket still marked dead on the next interval is terminated.
 
@@ -13,9 +13,9 @@ Source: the implementation in `src/relay/` (`protocol.ts`, `hub.ts`, `endpoint.t
 
 Client messages (validation and handling: ):
 
-- `create` `{ t, players?, cadence?, payload? }`. `players` is 2–4 (default 2); `cadence` is boolean; payload is stored as the creator's seat payload. Reply: `{ t:'room', code }`, or `{ t:'error', reason:'server full' }`.
+- `create` `{ t, players?, cadence?, payload? }` for legacy rooms, or `{ t, players?, cadence?, payload?, game, zones:true }` for a zone room. Legacy `players` is 2–4 (default 2); zone `players` is 2–64 (default 2) and cannot exceed that game's configured seat cap. `cadence` is boolean; payload is stored as the creator's seat payload. Reply: `{ t:'room', code }`, or an error (`server full`, `unknown game`, or `room full` for a game seat-cap excess).
 - `join` `{ t, code, payload? }`. Reply on a missing code: `error` reason `room not found`; no free seat or already-started room: `error` reason `room full`; an incomplete room: `{ t:'waiting', seat, players }`; when full, all seats receive `matched` (fields below).
-- `queue` `{ t, players?, cadence?, payload? }`. Same player-count and cadence constraints as `create`; payload may be absent/null or a shallow-enough object. A waiting caller receives `{ t:'queued', estimateMs }` (estimate is null until there are completed pairings). When the format queue reaches `players`, all seats receive `matched`. Invalid payload gives error reason `bad queue payload`; room capacity gives `server full`.
+- `queue` `{ t, players?, cadence?, payload? }` for legacy queues, or `{ t, players?, cadence?, payload?, game, zones:true }` for a game queue. It has the same player-count constraints as `create`; payload may be absent/null or a shallow-enough object. A waiting caller receives `{ t:'queued', estimateMs }` (estimate is null until there are completed pairings). When that queue reaches `players`, all seats receive `matched`. Invalid payload gives error reason `bad queue payload`; room capacity gives `server full`; an unconfigured game gives `unknown game` and a player count above its cap gives `room full`.
 - `unqueue` `{ t }`. Reply: `{ t:'unqueued' }`.
 - `act` `{ t, a, n? }`. `a` must be a bounded JSON object/array; optional `n` is an integer from 0 through 1,000,000. The sender receives `{ t:'ack', n }`; other seats receive `{ t:'act', a, n, from }`. An omitted sequence number is assigned as that seat's previous receive number plus one.
 - `resume` `{ t, token, have? }`. `token` is a nonempty string up to 64 characters; `have` is an integer sequence or an array of up to four sequence integers. Reply is `resumed` and any replayed `act` messages; see sections 6–7. Invalid/expired token replies `{ t:'error', reason:'resume expired' }`.
@@ -42,13 +42,22 @@ Server messages:
 
 - `create` allocates a private room and returns its code to seat 0. `join` takes the next free seat; a joining client gets `waiting` until every seat is occupied. The last join starts the room. Private rooms support 2–4 seats.
 - On start, every seat gets the same randomly generated 32-bit `seed` and `hostStarts`, its own `youAre`, and a unique UUID `token`. Payloads are retained by seat.
-- `bye` ends that seat immediately, without a grace period. In a two-seat room the other receives `opp_left`, and the room is destroyed. With 3–4 seats, others receive `player_left`; the room ends when at most one remains, and that remaining player receives `opp_left`.
+- Legacy private rooms support 2–4 seats; zone private rooms can have up to 64 seats, subject to the game's configured cap. `bye` ends that seat immediately, without a grace period. In a two-seat legacy room the other receives `opp_left`, and the room is destroyed. With 3–4 legacy seats, others receive `player_left`; the room ends when at most one remains, and that remaining player receives `opp_left`. Zone rooms use the seat notices described in section 4.
 
 ## 4. Legacy quick queue
 
 - `queue` pairs first-in, first-out within a `(players, cadence)` queue; `players` defaults to 2. The seat order is arrival order. Different player counts and cadence settings use separate queues.
 - Before a match, a queued caller receives `queued` with `estimateMs`: rounded mean wait across up to the latest 10 formed matches, or null when none exist.
 - Pairing creates a `q`-prefixed internal room and sends the same `matched` fields described in section 2. Repeated queue requests while already waiting have no reply; `unqueue` removes the socket from all queues and replies `unqueued`.
+
+### Zone rooms
+
+- A zone room requires both `game` (a string of 1–64 characters) and `zones:true` on `create` or `queue`. `RELAY_GAMES` is a comma-separated list of `game:maxPeers` entries (for example, `royal-fiesta:64`). Each configured game's seat cap is 2–64; a room may contain 2–64 players, but never more than its game's cap. An unconfigured game returns `error` reason `unknown game`; requesting more seats than the game cap returns `room full`.
+- Legacy queues remain unchanged and pair FIFO by `(players, cadence)`. Game queues are keyed by `(game, players, cadence)`. Queues for different games, player counts, or cadence values never mix, and game queues never mix with legacy queues.
+- Zone rooms use `player_dropped`, `player_back`, and `player_left` with the affected seat number, including in two-player rooms; they do not use `opp_dropped` or `opp_back`. When at most one live seat remains, the last player receives `opp_left` and the room is destroyed.
+- Binary frames are accepted only from a live member of a started zone room. The client-to-server frame is `0x5A`, reserved byte `0`, an unsigned 64-bit little-endian destination mask, then the payload. A set bit selects that seat index; an all-zero mask sends to every other room member. The server-to-client frame is `0x5A`, the sender's seat byte, then the payload. The sender does not receive its own frame, and disconnected or otherwise down seats are skipped.
+- `RELAY_MAX_BIN_BYTES` caps the entire incoming frame, including its 10-byte header; its default is 20,000 bytes. `RELAY_BIN_RATE_PER_SEC` defaults to 2,000 frames per client in a fixed one-second window. An oversize or malformed/unauthorized binary frame is dropped and counted as invalid; the tenth invalid frame closes the socket. Exceeding the binary rate sends `error` reason `rate limited` and closes the socket. Binary rate accounting is separate from JSON message rates.
+- Binary frames are not recorded in the room's resume log. Resume replays logged JSON `act` messages; a returning zone client gets the game's own snapshot through its zone protocol.
 
 ## 5. Action relay
 
@@ -75,8 +84,9 @@ Server messages:
 - `room full`: no free seat or room already started.
 - `bad queue payload`: queue payload fails validation.
 - `resume expired`: token has no live room or its seat is already gone.
+- `unknown game`: `create` or `queue` requested a zone room for a game not configured in `RELAY_GAMES`.
 - `rate limited`: message rate exceeds its applicable limit; the relay then closes the socket. Defaults are 20 messages/second and 400/minute; seated cadence clients get 90/second and 4,000/minute.
-- Unknown `t`, malformed JSON, invalid shape, binary frames, and oversize frames receive no error message: they count as invalid, are silently ignored, and the tenth invalid message closes the socket.
+- Unknown `t`, malformed JSON, invalid shape, binary frames that are not valid for a started zone-room member, and oversize frames receive no error message: they count as invalid, are silently ignored, and the tenth invalid message closes the socket.
 
 ## 9. Close behavior and codes
 
@@ -88,6 +98,7 @@ Server messages:
 - Resume grace: 60,000 ms by default (`RESUME_GRACE_MS` override), started on ungraceful disconnect.
 - WebSocket heartbeat interval: 30,000 ms.
 - Rate windows: 1,000 ms and 60,000 ms; default thresholds 20/sec and 400/minute, cadence-seat thresholds 90/sec and 4,000/minute.
+- Legacy room limits remain `MAX_PLAYERS` = 4, with the same JSON rate limits above. Zone room binary rates use a separate 1,000 ms window and default to 2,000 frames/second; the default incoming binary frame cap is 20,000 bytes.
 - No other timer is created for the relay protocol.
 
 ## 11. Shared `/ws` path
@@ -96,7 +107,7 @@ Server messages:
 
 ## 12. Test scenario names
 
-The scenario suite (`test/relay.test.ts`) covers **51 scenarios**, in this order:
+The legacy scenario suite (`test/relay.test.ts`) covers **51 scenarios**, in this order:
 
 1. matchmaking: both peers receive the same seed
 2. the queue payload is forwarded unchanged to the peer
@@ -149,3 +160,30 @@ The scenario suite (`test/relay.test.ts`) covers **51 scenarios**, in this order
 49. last player standing -> `opp_left` (match over)
 50. paced room: 45 consecutive actions pass without a disconnect
 51. paced room: the ceiling still exists (200 messages at once -> disconnected)
+
+The zone scenario suite (`test/relay.zones.test.ts`) covers **24 scenarios**, in this order:
+
+52. zero mask broadcasts in seat order except to the sender
+53. mask halves include boundary bits and ignore sender and out-of-range bits
+54. 64-seat broadcast and full masks route every other seat
+55. `ZoneGroup` enforces the game cap and skips empty and dropped seats
+56. queue keys separate games, legacy, player counts and cadence
+57. `GameQueues` takes FIFO, pops the tail, prunes and drops across lists
+58. zone create and queue accept up to 64 players with paired game and zones fields
+59. resume `have` keeps its legacy scalar and array validation
+60. zone config parses game caps and sets only explicitly supplied environment fields
+61. 64-seat zone room matches every seat and routes masks across both halves
+62. binary requires a seated member of a started zone room and counts invalid frames
+63. malformed binary frames are invalid and never relayed
+64. binary size cap includes the input header and accepts exactly the cap
+65. binary uses a fixed one-second window per client independently of JSON rate limits
+66. binary defaults allow the configured default rate without consuming the JSON budget
+67. zone create and queue refuse unknown games and seats above the game cap
+68. game queues and legacy queues form separate rooms with binary routing only inside the game
+69. game queues retain FIFO estimates and remove unqueued or disconnected clients
+70. server full pops only the new waiter and preserves the first queued client
+71. two-seat zones use seat notices on drop, resume and grace expiry before `opp_left`
+72. zone resume rebinds a live seat and binary history is absent from JSON replay
+73. zone seats that leave gracefully stop receiving binary while remaining seats keep routing
+74. relay endpoint forwards binary frames into the connected zone room
+75. handshake passes configured zone games and binary caps through the shared endpoint
