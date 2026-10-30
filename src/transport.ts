@@ -131,6 +131,7 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
     const wss = new WebSocketServer({ noServer: true, maxPayload: Math.max(...endpoints.map((endpoint) => endpoint.maxPayload)) }) as unknown as WsServer
     groups.set(path, { endpoints, defaultEndpoint: endpoints.length === 1 ? endpoints[0] : defaults[0], wss })
   }
+  const corked = new WeakSet<object>()
   const alive = new WeakMap<WsSocket, boolean>()
   const owners = new WeakMap<WsSocket, Endpoint>()
   const pending = new Map<WsSocket, number>()
@@ -219,7 +220,15 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
         if (ws.readyState === WS_OPEN) ws.send(text)
       },
       sendBinary(data: Uint8Array): void {
-        if (ws.readyState === WS_OPEN) ws.send(data)
+        if (ws.readyState !== WS_OPEN) return
+        // Frames fanned out to this socket within one pass of the event loop leave in one write.
+        const socket = (ws as unknown as { _socket?: { cork(): void; uncork(): void } })._socket
+        if (socket && !corked.has(ws)) {
+          socket.cork()
+          corked.add(ws)
+          setImmediate(() => { corked.delete(ws); socket.uncork() })
+        }
+        ws.send(data)
       },
       close(code: number, reason: string): void {
         ws.close(code, reason)
