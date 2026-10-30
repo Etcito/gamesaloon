@@ -50,7 +50,9 @@ export function createHandshake(options: HandshakeOptions = {}): Handshake {
   }
   // MatchService's public constructor takes deps, store, hooks, then options.
   const match = new MatchService(deps, options.store ?? createMemoryStore(), options.hooks ?? {}, { rankedRequireAccount: cfg.rankedRequireAccount })
-  const relayHub = new RelayHub(deps, match)
+  const relayHub = new RelayHub(deps, match, {
+    games: cfg.relayGames, maxBinBytes: cfg.relayMaxBinBytes, binRatePerSec: cfg.relayBinRatePerSec,
+  })
   match.attach(relayHub)
   const relay = relayEndpoint(relayHub)
   if (relay.claims) {

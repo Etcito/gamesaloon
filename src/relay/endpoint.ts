@@ -18,6 +18,7 @@ export function relayEndpoint(hub: RelayHub): Endpoint {
       return {
         id,
         message: (frame) => hub.message(id, frame),
+        binary: (frame) => hub.binary(id, frame),
         closed: () => hub.disconnect(id),
       }
     },

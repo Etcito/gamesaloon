@@ -2,10 +2,14 @@
 // Copyright (c) 2026 Etcito
 // Transport-agnostic GameNet relay with tick-driven reconnection deadlines.
 import type { ClientConn } from '../hub.ts'
+import { DEFAULT_RELAY_MAX_BIN_BYTES, DEFAULT_RELAY_BIN_RATE_PER_SEC } from '../config.ts'
 import type { RelayClientMessage, RelayMessage, RelayMatched } from './protocol.ts'
+import { decodeBinIn, encodeBinOut } from './binary.ts'
+import { GameQueues, queueKey } from './gameQueues.ts'
+import { ZoneGroup } from './groups.ts'
 import {
   CADENCE_RATE_PER_MIN, CADENCE_RATE_PER_SEC, MAX_INVALID, MAX_LOG_ACTS,
-  MAX_LOG_ACTS_CADENCE, MAX_ROOMS, MAX_SOCKETS, RATE_MINUTE_WINDOW_MS,
+  MAX_LOG_ACTS_CADENCE, MAX_ROOMS, MAX_SOCKETS, MAX_ZONE_PEERS, RATE_MINUTE_WINDOW_MS,
   RATE_PER_MIN, RATE_PER_SEC, RATE_SECOND_WINDOW_MS, RESUME_GRACE_MS,
   encodeRelay, parseRelayMessage,
 } from './protocol.ts'
@@ -29,11 +33,16 @@ interface Client {
   cadence: boolean
   invalidCount: number
   msgTimes: number[]
+  binWindowStart: number
+  binCount: number
 }
 
 interface Session {
   players: number
   cadence: boolean
+  game: string | null
+  zones: boolean
+  group: ZoneGroup | null
   opts: { private?: boolean; quick?: boolean }
   seats: (string | null)[]
   // The reference forwards payloads verbatim, including primitive values.
@@ -51,17 +60,24 @@ interface Waiter { conn: string; payload: unknown; since: number }
 export class RelayHub {
   private deps: RelayDeps
   private ext?: RelayExtension
+  private games: ReadonlyMap<string, number>
+  private maxBinBytes: number
+  private binRatePerSec: number
+  private binDestinations = new Array<string>(MAX_ZONE_PEERS).fill('')
   private clients = new Map<string, Client>()
   private sessions = new Map<string, Session>()
   private resumeIndex = new Map<string, { code: string; side: number }>()
-  private waitLists = new Map<string, Waiter[]>()
+  private waitLists = new GameQueues<Waiter>()
   private recentWaitsMs: number[] = []
   private quickSeq = 0
   private counter = 0
 
-  constructor(deps: RelayDeps, ext?: RelayExtension) {
+  constructor(deps: RelayDeps, ext?: RelayExtension, opts?: { games?: ReadonlyMap<string, number>; maxBinBytes?: number; binRatePerSec?: number }) {
     this.deps = deps
     this.ext = ext
+    this.games = opts?.games ?? new Map<string, number>()
+    this.maxBinBytes = opts?.maxBinBytes ?? DEFAULT_RELAY_MAX_BIN_BYTES
+    this.binRatePerSec = opts?.binRatePerSec ?? DEFAULT_RELAY_BIN_RATE_PER_SEC
   }
 
   connect(conn: ClientConn, _url: string): string {
@@ -73,7 +89,10 @@ export class RelayHub {
     }
     const hex = Math.floor(this.deps.random() * 0x100000000).toString(16).padStart(8, '0')
     const id = `c${++this.counter}-${hex}`
-    this.clients.set(id, { id, conn, roomCode: null, cadence: false, invalidCount: 0, msgTimes: [] })
+    this.clients.set(id, {
+      id, conn, roomCode: null, cadence: false, invalidCount: 0, msgTimes: [],
+      binWindowStart: 0, binCount: 0,
+    })
     return id
   }
 
@@ -120,6 +139,38 @@ export class RelayHub {
       // Extension failures can contain secrets; do not include their text.
       this.deps.log('error', `[relay] message from ${conn} failed`)
       this.sendError(conn, 'internal', 'internal server error')
+    }
+  }
+
+  binary(conn: string, frame: Uint8Array): void {
+    const c = this.clients.get(conn)
+    if (!c) return
+    const room = this.sessions.get(c.roomCode ?? '')
+    const side = room?.seats.indexOf(conn) ?? -1
+    if (!room?.zones || !room.tokens || !room.group || side < 0
+      || room.down[side] !== null || room.gone[side]) return this.dropInvalid(c)
+    if (frame.byteLength > this.maxBinBytes) return this.dropInvalid(c)
+
+    const now = this.deps.now()
+    if (c.binCount === 0 || now - c.binWindowStart >= RATE_SECOND_WINDOW_MS) {
+      c.binWindowStart = now
+      c.binCount = 0
+    }
+    if (++c.binCount > this.binRatePerSec) {
+      this.sendError(conn, 'rate limited', 'rate limited')
+      this.closeClient(c)
+      return
+    }
+    const decoded = decodeBinIn(frame)
+    if (!decoded) return this.dropInvalid(c)
+    const count = room.group.route(side, decoded.maskLo, decoded.maskHi, this.binDestinations)
+    const out = encodeBinOut(side, decoded.payload)
+    for (let i = 0; i < count; i++) {
+      const id = this.binDestinations[i]
+      const dest = this.clients.get(id)
+      try { dest?.conn.sendBinary?.(out) } catch {
+        this.deps.log('error', `[relay] send to ${id} failed`)
+      }
     }
   }
 
@@ -190,11 +241,19 @@ export class RelayHub {
   private dispatch(c: Client, msg: RelayClientMessage, now: number): void {
     switch (msg.t) {
       case 'create': {
+        const players = msg.players ?? 2
+        const game = msg.game ?? null
+        if (msg.zones) {
+          const cap = this.games.get(game as string)
+          if (cap === undefined) return this.sendError(c.id, 'unknown game', 'unknown game')
+          if (players > cap) return this.sendError(c.id, 'room full', 'room full')
+        }
         if (this.sessions.size >= MAX_ROOMS) return this.sendError(c.id, 'server full', 'server full')
         const code = this.newCode()
         if (!code) return this.sendError(c.id, 'server full', 'server full')
-        const room = this.makeSession(msg.players ?? 2, !!msg.cadence, { private: true })
+        const room = this.makeSession(players, !!msg.cadence, { private: true }, game)
         room.seats[0] = c.id
+        room.group?.set(0, c.id)
         room.payloads[0] = msg.payload ?? null
         this.sessions.set(code, room)
         c.roomCode = code
@@ -208,6 +267,7 @@ export class RelayHub {
         const free = room.seats.indexOf(null)
         if (free < 0 || room.tokens) return this.sendError(c.id, 'room full', 'room full')
         room.seats[free] = c.id
+        room.group?.set(free, c.id)
         room.payloads[free] = msg.payload ?? null
         c.roomCode = code
         if (room.seats.includes(null)) {
@@ -241,15 +301,18 @@ export class RelayHub {
   }
 
   private queue(c: Client, msg: Extract<RelayClientMessage, { t: 'queue' }>, now: number): void {
-    for (const list of this.waitLists.values()) if (list.some((e) => e.conn === c.id)) return
+    if (this.waitLists.has(c.id)) return
     const players = msg.players ?? 2
     const cadence = !!msg.cadence
-    const key = `${players}|${cadence ? 1 : 0}`
-    const list = this.waitLists.get(key) ?? []
-    this.waitLists.set(key, list)
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (!this.clients.has(list[i].conn)) list.splice(i, 1)
+    const game = msg.game ?? null
+    if (msg.zones) {
+      const cap = this.games.get(game as string)
+      if (cap === undefined) return this.sendError(c.id, 'unknown game', 'unknown game')
+      if (players > cap) return this.sendError(c.id, 'room full', 'room full')
     }
+    const key = queueKey(msg.game ?? '', players, cadence)
+    this.waitLists.prune(key, (conn) => this.clients.has(conn))
+    const list = this.waitLists.list(key)
     list.push({ conn: c.id, payload: msg.payload ?? null, since: now })
     if (list.length < players) {
       const last = this.recentWaitsMs.slice(-10)
@@ -257,33 +320,34 @@ export class RelayHub {
       return this.send(c.id, { t: 'queued', estimateMs })
     }
     if (this.sessions.size >= MAX_ROOMS) {
-      list.pop()
+      this.waitLists.pop(key)
       return this.sendError(c.id, 'server full', 'server full')
     }
-    const seated = list.splice(0, players)
-    if (!list.length) this.waitLists.delete(key)
+    const seated = this.waitLists.take(key, players)
     for (const e of seated) {
       this.recentWaitsMs.push(now - e.since)
       if (this.recentWaitsMs.length > 50) this.recentWaitsMs.shift()
     }
-    this.pairQuick(seated, cadence, RESUME_GRACE_MS)
+    this.pairQuick(seated, cadence, RESUME_GRACE_MS, game)
   }
 
-  private pairQuick(seated: Waiter[], cadence: boolean, holdMs: number): string {
+  private pairQuick(seated: Waiter[], cadence: boolean, holdMs: number, game: string | null = null): string {
     const code = `q${++this.quickSeq}`
     const players = seated.length
-    const room = this.makeSession(players, cadence, { quick: true })
+    const room = this.makeSession(players, cadence, { quick: true }, game)
     room.holdMs = holdMs
     room.seats = seated.map((e) => e.conn)
+    for (let s = 0; s < players; s++) room.group?.set(s, room.seats[s])
     room.payloads = seated.map((e) => e.payload)
     this.sessions.set(code, room)
     this.startRoom(code, room)
     return code
   }
 
-  private makeSession(players: number, cadence: boolean, opts: Session['opts']): Session {
+  private makeSession(players: number, cadence: boolean, opts: Session['opts'], game: string | null = null): Session {
     return {
-      players, cadence, opts,
+      players, cadence, opts, game, zones: game !== null,
+      group: game === null ? null : new ZoneGroup(game, players, this.games.get(game)!),
       seats: new Array<string | null>(players).fill(null),
       payloads: new Array<unknown>(players).fill(null), tokens: null,
       recv: new Array<number>(players).fill(0),
@@ -329,6 +393,7 @@ export class RelayHub {
     // Rebind before closing the old connection so its cleanup cannot arm a
     // deadline for the new occupant of this seat.
     room.seats[side] = c.id
+    room.group?.set(side, c.id)
     c.roomCode = ref.code
     c.cadence = room.cadence
     const old = current && current !== c.id ? this.clients.get(current) : undefined
@@ -346,7 +411,7 @@ export class RelayHub {
     for (const e of room.log) {
       if (e.side !== side && e.n > have[e.side]) this.send(c.id, { t: 'act', a: e.a, n: e.n, from: e.side })
     }
-    if (room.players === 2) this.broadcast(room, { t: 'opp_back' }, side)
+    if (room.players === 2 && !room.zones) this.broadcast(room, { t: 'opp_back' }, side)
     else this.broadcast(room, { t: 'player_back', seat: side }, side)
     this.ext?.seatResumed({ session: ref.code, seat: side, conn: c.id })
   }
@@ -389,11 +454,7 @@ export class RelayHub {
   }
 
   private dropFromWaitLists(conn: string): void {
-    for (const [key, list] of this.waitLists) {
-      const i = list.findIndex((e) => e.conn === conn)
-      if (i >= 0) list.splice(i, 1)
-      if (!list.length) this.waitLists.delete(key)
-    }
+    this.waitLists.drop(conn)
   }
 
   private broadcast(room: Session, msg: Record<string, unknown>, except: number): void {
@@ -411,7 +472,9 @@ export class RelayHub {
       if (!graceful && room.tokens) {
         if (room.down[side] !== null) continue
         room.down[side] = this.deps.now() + room.holdMs
-        const msg = room.players === 2
+        // The seat stays reserved for resume, but binary routing only sees live connections.
+        room.group?.set(side, null)
+        const msg = room.players === 2 && !room.zones
           ? { t: 'opp_dropped', graceMs: room.holdMs }
           : { t: 'player_dropped', seat: side, graceMs: room.holdMs }
         this.broadcast(room, msg, side)
@@ -430,7 +493,8 @@ export class RelayHub {
     const c = id ? this.clients.get(id) : undefined
     if (c) { c.roomCode = null; c.cadence = false }
     room.seats[side] = null
-    if (room.players === 2) {
+    room.group?.set(side, null)
+    if (room.players === 2 && !room.zones) {
       this.broadcast(room, { t: 'opp_left' }, side)
       this.destroyRoom(code, room)
     } else {
