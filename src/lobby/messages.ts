@@ -3,10 +3,10 @@
 // Lobby messages on the relay socket (/ws). New types only: the relay and match protocols are unchanged.
 import { MAX_PLAYERS, RELAY_CLIENT_TYPES, RELAY_SERVER_TYPES, RELAY_TYPE_FIELD } from '../relay/protocol.ts'
 import { MATCH_CLIENT_TYPES, MATCH_SERVER_TYPES } from '../match/messages.ts'
-import type { LobbyAction, LobbyPhase, LobbySummary } from './lobby.ts'
+import type { LobbyAction, LobbyMember, LobbyPhase, LobbySummary } from './lobby.ts'
 
-export const LOBBY_CLIENT_TYPES = ['lobby_enter', 'lobby_pick', 'lobby_leave'] as const
-export const LOBBY_SERVER_TYPES = ['lobby_choice', 'lobby_state', 'lobby_watch', 'lobby_act', 'lobby_closed', 'lobby_left', 'lobby_error'] as const
+export const LOBBY_CLIENT_TYPES = ['lobby_enter', 'lobby_pick', 'lobby_leave', 'lobby_presence'] as const
+export const LOBBY_SERVER_TYPES = ['lobby_choice', 'lobby_state', 'lobby_watch', 'lobby_act', 'lobby_closed', 'lobby_left', 'lobby_error', 'lobby_presence'] as const
 export const LOBBY_ERROR_CODES = ['not_entered', 'unknown_lobby', 'lobby_closed', 'in_session', 'server full'] as const
 export type LobbyErrorCode = typeof LOBBY_ERROR_CODES[number]
 
@@ -17,15 +17,27 @@ for (const type of [...LOBBY_CLIENT_TYPES, ...LOBBY_SERVER_TYPES]) {
 
 /** Largest seat payload (JSON characters) kept for a lobby member: names and colours, not saves. */
 export const MAX_LOBBY_PAYLOAD = 512
+/**
+ * Largest presence state (JSON characters): a position, a facing, a mode, an emote. Presence is the hub's
+ * avatar stream between lobby members; anything bigger is not a pose.
+ */
+export const MAX_PRESENCE_STATE = 256
+const MAX_PRESENCE_KEYS = 16
 
 export type LobbyClientMessage =
   | { t: 'lobby_enter'; game: string; seats: number; cadence: boolean; payload: Record<string, unknown> | null }
   | { t: 'lobby_pick'; action: LobbyAction; id: string | null }
   | { t: 'lobby_leave' }
+  | { t: 'lobby_presence'; a: Record<string, unknown> }
 
 export type LobbyServerMessage =
   | { t: 'lobby_choice'; lobbies: LobbySummary[] }
-  | { t: 'lobby_state'; id: string; phase: LobbyPhase; role: 'player' | 'spectator'; seat: number; players: unknown[]; seats: number; startsInMs: number; waitMs: number }
+  | {
+    t: 'lobby_state'; id: string; phase: LobbyPhase; role: 'player' | 'spectator'; seat: number; players: unknown[]; seats: number; startsInMs: number; waitMs: number
+    /** Additions for presence (older clients ignore them): this client's presence key and the whole roster. */
+    you: number; members: LobbyMember[]
+  }
+  | { t: 'lobby_presence'; id: string; from: number; a: Record<string, unknown> }
   | { t: 'lobby_watch'; id: string; session: string; seed: number; players: number; opps: unknown[]; replay: boolean }
   | { t: 'lobby_act'; id: string; a: unknown; n: number; from: number }
   | { t: 'lobby_closed'; id: string; reason: 'ended' | 'empty' }
@@ -56,6 +68,12 @@ export function parseLobbyMessage(msg: Record<string, unknown>): LobbyClientMess
       return { t: 'lobby_pick', action, id: typeof id === 'string' ? id : null }
     }
     case 'lobby_leave': return { t: 'lobby_leave' }
+    case 'lobby_presence': {
+      const a = msg.a
+      if (!isObject(a) || Object.keys(a).length > MAX_PRESENCE_KEYS) return null
+      if (JSON.stringify(a).length > MAX_PRESENCE_STATE) return null
+      return { t: 'lobby_presence', a }
+    }
     default: return null
   }
 }

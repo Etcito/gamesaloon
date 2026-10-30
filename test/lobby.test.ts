@@ -257,3 +257,85 @@ test('relay contract unchanged: the legacy queue still pairs alongside the lobby
   s.say(b, { t: 'queue', players: 2, payload: { n: 2 } })
   assert.equal(a.conn.last('matched')!.players, 2)
 })
+
+// ---- shared hub presence ----
+
+function joinFirst(s: ReturnType<typeof setup>, c: { id: string; conn: FakeConn }, action: 'join' | 'spectate', name: string): string {
+  s.enter(c, name)
+  const id = ((c.conn.last('lobby_choice')!.lobbies as Record<string, unknown>[])[0]).id as string
+  s.say(c, { t: 'lobby_pick', action, id })
+  return id
+}
+
+test('presence: lobby_state carries this client key and the roster, spectators included and told apart', () => {
+  const s = setup()
+  const a = s.add(), b = s.add(), w = s.add()
+  s.enter(a, 'A')
+  joinFirst(s, b, 'join', 'B')
+  joinFirst(s, w, 'spectate', 'W')
+  const sa = a.conn.last('lobby_state')!
+  assert.equal(sa.you, 0)
+  assert.equal(b.conn.last('lobby_state')!.you, 1)
+  assert.equal(w.conn.last('lobby_state')!.you, 2)
+  // The players learn of the spectator (the roster), the existing fields are unchanged.
+  assert.deepEqual((sa.players as Record<string, unknown>[]).map((p) => p.name), ['A', 'B'])
+  assert.deepEqual((sa.members as Record<string, unknown>[]).map((m) => [m.k, m.role, (m.p as Record<string, unknown>).name]),
+    [[0, 'player', 'A'], [1, 'player', 'B'], [2, 'spectator', 'W']])
+  // Keys are never reused: B leaves, C arrives with key 3.
+  s.say(b, { t: 'lobby_leave' })
+  const c = s.add()
+  joinFirst(s, c, 'join', 'C')
+  assert.deepEqual((a.conn.last('lobby_state')!.members as Record<string, unknown>[]).map((m) => m.k), [0, 3, 2])
+  // The spectator leaving updates the players' roster.
+  s.say(w, { t: 'lobby_leave' })
+  assert.deepEqual((a.conn.last('lobby_state')!.members as Record<string, unknown>[]).map((m) => m.k), [0, 3])
+})
+
+test('presence: a member state reaches the other members that send presence, never another lobby nor a silent client', () => {
+  const s = setup()
+  const a = s.add(), b = s.add(), w = s.add(), old = s.add(), x = s.add()
+  s.enter(a, 'A')
+  joinFirst(s, b, 'join', 'B')
+  joinFirst(s, w, 'spectate', 'W')
+  joinFirst(s, old, 'join', 'Old')
+  // x opens its own lobby (new): presence never crosses lobbies.
+  s.enter(x, 'X')
+  s.say(x, { t: 'lobby_pick', action: 'new' })
+  const st = { k: 'st', s: 1, p: [0, 100, 0], f: 0, m: 0, e: 0, q: 1, x: 0 }
+  s.say(b, { t: 'lobby_presence', a: st })
+  s.say(w, { t: 'lobby_presence', a: st })
+  s.say(x, { t: 'lobby_presence', a: st })
+  s.say(a, { t: 'lobby_presence', a: { ...st, s: 2 } })
+  const lobby = a.conn.last('lobby_state')!.id
+  assert.deepEqual(b.conn.last('lobby_presence'), { t: 'lobby_presence', id: lobby, from: 0, a: { ...st, s: 2 } })
+  assert.equal(w.conn.last('lobby_presence')!.from, 0)
+  // a had not sent presence yet when b and w did: it received nothing (and never anything from x).
+  assert.equal(a.conn.last('lobby_presence'), undefined)
+  s.say(w, { t: 'lobby_presence', a: { ...st, s: 3 } })
+  assert.deepEqual([a, b].map((c) => c.conn.last('lobby_presence')!.from), [2, 2])
+  assert.equal(old.conn.last('lobby_presence'), undefined)
+  assert.equal(x.conn.sent.filter((m) => m.t === 'lobby_presence').length, 0)
+})
+
+test('presence: dropped outside a lobby and in a round without counting invalid; an oversized state is invalid', () => {
+  const s = setup(1000)
+  const a = s.add(), b = s.add(), w = s.add()
+  for (let i = 0; i < 12; i++) s.say(a, { t: 'lobby_presence', a: { k: 'st', s: i } })
+  assert.equal(a.conn.last('lobby_error'), undefined)
+  s.enter(a, 'A')
+  joinFirst(s, b, 'join', 'B')
+  joinFirst(s, w, 'spectate', 'W')
+  s.say(w, { t: 'lobby_presence', a: { k: 'st', s: 1 } })
+  s.clock.t += 1000
+  s.hub.tick(s.clock.t)
+  assert.ok(a.conn.last('matched'))
+  // Seated players neither send nor receive presence; spectators keep theirs.
+  const nw = w.conn.sent.length
+  s.say(a, { t: 'lobby_presence', a: { k: 'st', s: 5 } })
+  assert.equal(w.conn.sent.length, nw)
+  s.say(w, { t: 'lobby_presence', a: { k: 'st', s: 2 } })
+  assert.equal(a.conn.last('lobby_presence'), undefined)
+  assert.equal(parseLobbyMessage({ t: 'lobby_presence', a: { s: 'x'.repeat(300) } }), null)
+  assert.equal(parseLobbyMessage({ t: 'lobby_presence', a: [1, 2] }), null)
+  assert.equal(lobbyClaims('{"t":"lobby_presence","a":{}}'), true)
+})

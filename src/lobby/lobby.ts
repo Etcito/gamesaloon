@@ -34,6 +34,28 @@ export interface Lobby {
   /** Relay session of the started round. */
   session: string | null
   seed: number | null
+  /**
+   * Presence key of every player and spectator: a small integer unique in this lobby, given in arrival
+   * order and never reused, so a client can tell members apart and order them ('Bean 1', 'Bean 2'...).
+   */
+  keys: Map<string, number>
+  nextKey: number
+  /** Spectators' payloads (what they sent with lobby_enter), for the roster. */
+  spectatorPayloads: Map<string, unknown>
+}
+
+/** One entry of a lobby's roster: its players in seat order, then its spectators in arrival order. */
+export interface LobbyMember { k: number; role: 'player' | 'spectator'; p: unknown }
+
+export function roster(lobby: Lobby): LobbyMember[] {
+  const out: LobbyMember[] = lobby.members.map((m) => ({ k: lobby.keys.get(m.conn) ?? -1, role: 'player' as const, p: m.payload }))
+  const specs = [...lobby.spectators].map((c) => ({ k: lobby.keys.get(c) ?? -1, role: 'spectator' as const, p: lobby.spectatorPayloads.get(c) ?? null }))
+  specs.sort((a, b) => a.k - b.k)
+  return out.concat(specs)
+}
+
+function addKey(lobby: Lobby, conn: string): void {
+  if (!lobby.keys.has(conn)) lobby.keys.set(conn, lobby.nextKey++)
 }
 
 export interface LobbySummary {
@@ -125,6 +147,7 @@ export class LobbyBook {
       id: `L${++this.seq}`, format, phase: 'waiting', openedAt: now,
       startsAt: now + this.rules.waitMs, members: [{ conn, payload }],
       spectators: new Set(), session: null, seed: null,
+      keys: new Map([[conn, 0]]), nextKey: 1, spectatorPayloads: new Map(),
     }
     this.lobbies.set(lobby.id, lobby)
     this.where.set(conn, lobby.id)
@@ -138,16 +161,19 @@ export class LobbyBook {
     if (lobby.phase !== 'waiting' || lobby.members.length >= lobby.format.seats) return 'closed'
     this.leave(conn)
     lobby.members.push({ conn, payload })
+    addKey(lobby, conn)
     this.where.set(conn, lobby.id)
     return lobby
   }
 
-  /** Watches a lobby, waiting or playing. */
-  spectate(conn: string, id: string): Lobby | 'unknown' {
+  /** Watches a lobby, waiting or playing. `payload` (name, colour) is shown in the roster. */
+  spectate(conn: string, id: string, payload: unknown = null): Lobby | 'unknown' {
     const lobby = this.lobbies.get(id)
     if (!lobby) return 'unknown'
     this.leave(conn)
     lobby.spectators.add(conn)
+    lobby.spectatorPayloads.set(conn, payload)
+    addKey(lobby, conn)
     this.where.set(conn, lobby.id)
     return lobby
   }
@@ -157,10 +183,16 @@ export class LobbyBook {
     const lobby = this.of(conn)
     if (!lobby) return null
     this.where.delete(conn)
-    lobby.spectators.delete(conn)
+    if (lobby.spectators.delete(conn)) {
+      lobby.spectatorPayloads.delete(conn)
+      lobby.keys.delete(conn)
+    }
     if (lobby.phase === 'waiting') {
       const i = lobby.members.findIndex((m) => m.conn === conn)
-      if (i >= 0) lobby.members.splice(i, 1)
+      if (i >= 0) {
+        lobby.members.splice(i, 1)
+        lobby.keys.delete(conn)
+      }
       if (!lobby.members.length) {
         this.close(lobby.id)
         return { lobby, closed: true }

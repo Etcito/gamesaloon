@@ -5,7 +5,7 @@
 // lobby_pick join|spectate|new. When the wait ends (or the lobby is full) the seated players get the
 // relay's usual `matched` (RelayHub.startGroup); spectators get lobby_watch then every act as lobby_act.
 import type { RelayExtension, RelayHub, RelaySeatRef } from '../relay/hub.ts'
-import { LobbyBook } from './lobby.ts'
+import { LobbyBook, roster } from './lobby.ts'
 import type { Lobby, LobbyFormat, LobbyRules } from './lobby.ts'
 import { parseLobbyMessage } from './messages.ts'
 import type { LobbyErrorCode, LobbyServerMessage } from './messages.ts'
@@ -19,6 +19,8 @@ export class LobbyService implements RelayExtension {
   private hub: RelayHub | null = null
   /** Arrivals that were offered a choice: what they asked to play. */
   private pending = new Map<string, { format: LobbyFormat; payload: unknown }>()
+  /** Sockets that sent lobby_presence: only they receive the others' presence. */
+  private presence = new Set<string>()
 
   constructor(deps: LobbyDeps, rules: Partial<LobbyRules> = {}) {
     this.deps = deps
@@ -38,6 +40,7 @@ export class LobbyService implements RelayExtension {
       this.send(conn, { t: 'lobby_left' })
       return true
     }
+    if (msg.t === 'lobby_presence') return this.presenceFrom(conn, msg.a)
     if (this.hub?.seatOf(conn)) return this.error(conn, 'in_session')
     if (msg.t === 'lobby_enter') {
       const format: LobbyFormat = { game: msg.game, seats: msg.seats, cadence: msg.cadence }
@@ -66,15 +69,17 @@ export class LobbyService implements RelayExtension {
       this.startDue(now)
       return true
     }
-    this.book.spectate(conn, target.id)
+    this.book.spectate(conn, target.id, want.payload)
     this.pending.delete(conn)
-    this.stateTo(conn, target, now)
+    // Everyone not in the round learns of the new spectator (the roster: presence shows it in the hub).
+    this.publish(target, now)
     if (target.phase === 'playing') this.watchFrom(conn, target)
     return true
   }
 
   connClosed(conn: string, _seat: RelaySeatRef | null): void {
     this.pending.delete(conn)
+    this.presence.delete(conn)
     this.leave(conn, this.deps.now())
   }
 
@@ -109,7 +114,7 @@ export class LobbyService implements RelayExtension {
     if (!r) return
     if (r.closed) {
       for (const c of r.lobby.spectators) this.send(c, { t: 'lobby_closed', id: r.lobby.id, reason: 'empty' })
-    } else if (r.lobby.phase === 'waiting') this.publish(r.lobby, now)
+    } else this.publish(r.lobby, now)
   }
 
   private startDue(now: number): void {
@@ -135,9 +140,9 @@ export class LobbyService implements RelayExtension {
     }
   }
 
-  /** The lobby's state to every player and spectator (waiting phase). */
+  /** The lobby's state to every player and spectator; once the round is on, to its spectators only (the players are in the round). */
   private publish(lobby: Lobby, now: number): void {
-    for (const m of lobby.members) this.stateTo(m.conn, lobby, now)
+    if (lobby.phase === 'waiting') for (const m of lobby.members) this.stateTo(m.conn, lobby, now)
     for (const c of lobby.spectators) this.stateTo(c, lobby, now)
   }
 
@@ -149,7 +154,28 @@ export class LobbyService implements RelayExtension {
       players: lobby.members.map((m) => m.payload), seats: lobby.format.seats,
       startsInMs: lobby.phase === 'waiting' ? Math.max(0, lobby.startsAt - now) : 0,
       waitMs: this.waitMs,
+      you: lobby.keys.get(conn) ?? -1, members: roster(lobby),
     })
+  }
+
+  /**
+   * Shared hub presence: a member's avatar state goes to every other member of its lobby (players and
+   * spectators) that is not in a round and that sends presence itself, so a client without presence
+   * never receives a frame it does not know. Outside a lobby, or seated in a round, it is dropped
+   * silently (a late frame after the start is not an error). The relay's per-socket rate limit bounds it.
+   */
+  private presenceFrom(conn: string, a: Record<string, unknown>): true {
+    const lobby = this.book.of(conn)
+    if (!lobby || this.hub?.seatOf(conn)) return true
+    this.presence.add(conn)
+    const from = lobby.keys.get(conn)
+    if (from === undefined) return true
+    const frame: LobbyServerMessage = { t: 'lobby_presence', id: lobby.id, from, a }
+    for (const c of [...lobby.members.map((m) => m.conn), ...lobby.spectators]) {
+      if (c === conn || !this.presence.has(c) || this.hub?.seatOf(c)) continue
+      this.send(c, frame)
+    }
+    return true
   }
 
   /** Header then the act log so far: the spectator replays the round from its start (when the log allows). */
