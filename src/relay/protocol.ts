@@ -16,6 +16,7 @@ export const CADENCE_RATE_PER_MIN = 4000
 export const MAX_ROOMS = 200
 export const MAX_SOCKETS = 500
 export const MAX_PLAYERS = 4
+export const MAX_ZONE_PEERS = 64
 export const MAX_ACT_KEYS = 24
 export const MAX_ACT_ITEMS = 512
 export const MAX_ACT_DEPTH = 6
@@ -42,18 +43,18 @@ export const RELAY_TYPES = [...RELAY_CLIENT_TYPES, ...RELAY_SERVER_TYPES] as con
 
 export const RELAY_ERROR_CODES = [
   'server full', 'room not found', 'room full', 'bad queue payload',
-  'resume expired', 'rate limited',
+  'resume expired', 'rate limited', 'unknown game',
 ] as const
 export type RelayErrorCode = typeof RELAY_ERROR_CODES[number]
 
 export type RelayPayload = Record<string, unknown> | unknown[] | null
 export type RelayHave = number | number[]
 
-export type RelayCreate = { t: 'create'; players?: number; cadence?: boolean; payload?: RelayPayload }
+export type RelayCreate = { t: 'create'; players?: number; cadence?: boolean; payload?: RelayPayload; game?: string; zones?: true }
 export type RelayJoin = { t: 'join'; code: string; payload?: RelayPayload }
 export type RelayAct = { t: 'act'; a: Record<string, unknown> | unknown[]; n?: number }
 export type RelayBye = { t: 'bye' }
-export type RelayQueue = { t: 'queue'; players?: number; cadence?: boolean; payload?: RelayPayload }
+export type RelayQueue = { t: 'queue'; players?: number; cadence?: boolean; payload?: RelayPayload; game?: string; zones?: true }
 export type RelayUnqueue = { t: 'unqueue' }
 export type RelayResume = { t: 'resume'; token: string; have?: RelayHave }
 export type RelayPing = { t: 'ping' }
@@ -107,7 +108,10 @@ function isValidRelayMessage(value: Record<string, unknown>): value is Record<st
       : false
   }
   if (type === 'create' || type === 'queue') {
-    if (value.players !== undefined && !(Number.isInteger(value.players) && (value.players as number) >= 2 && (value.players as number) <= MAX_PLAYERS)) return false
+    const zones = value.game !== undefined || value.zones !== undefined
+    if (zones && !(typeof value.game === 'string' && value.game.length >= 1 && value.game.length <= 64 && value.zones === true)) return false
+    const maxPlayers = zones ? MAX_ZONE_PEERS : MAX_PLAYERS
+    if (value.players !== undefined && !(Number.isInteger(value.players) && (value.players as number) >= 2 && (value.players as number) <= maxPlayers)) return false
     if (value.cadence !== undefined && typeof value.cadence !== 'boolean') return false
     if (type === 'queue' && value.payload !== undefined && value.payload !== null
       && typeof value.payload === 'object' && !shallowEnough(value.payload, 0)) return false
