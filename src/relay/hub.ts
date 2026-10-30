@@ -8,7 +8,7 @@ import { decodeBinIn, encodeBinOut } from './binary.ts'
 import { GameQueues, queueKey } from './gameQueues.ts'
 import { ZoneGroup } from './groups.ts'
 import {
-  CADENCE_RATE_PER_MIN, CADENCE_RATE_PER_SEC, MAX_INVALID, MAX_LOG_ACTS,
+  CADENCE_RATE_PER_MIN, CADENCE_RATE_PER_SEC, MAX_INVALID, MAX_LOG_ACTS, MAX_PLAYERS,
   MAX_LOG_ACTS_CADENCE, MAX_ROOMS, MAX_SOCKETS, MAX_ZONE_PEERS, RATE_MINUTE_WINDOW_MS,
   RATE_PER_MIN, RATE_PER_SEC, RATE_SECOND_WINDOW_MS, RESUME_GRACE_MS,
   encodeRelay, parseRelayMessage,
@@ -24,6 +24,22 @@ export interface RelayExtension {
   tick(nowMs: number): void
   seatLeft?(seat: RelaySeatRef): void
   seatActed?(seat: RelaySeatRef, now: number): void
+  /** An accepted act, after it was relayed to the seats (spectator streams, see src/lobby). */
+  sessionAct?(session: string, from: number, n: number, a: unknown): void
+}
+
+/** Several extensions behind the hub's single slot: a message goes to the first that claims it, events go to all. */
+export function composeExtensions(...exts: RelayExtension[]): RelayExtension {
+  return {
+    message: (conn, msg) => exts.some((e) => e.message(conn, msg)),
+    connClosed: (conn, seat) => { for (const e of exts) e.connClosed(conn, seat) },
+    seatResumed: (seat) => { for (const e of exts) e.seatResumed(seat) },
+    sessionEnded: (session) => { for (const e of exts) e.sessionEnded(session) },
+    tick: (now) => { for (const e of exts) e.tick(now) },
+    seatLeft: (seat) => { for (const e of exts) e.seatLeft?.(seat) },
+    seatActed: (seat, now) => { for (const e of exts) e.seatActed?.(seat, now) },
+    sessionAct: (session, from, n, a) => { for (const e of exts) e.sessionAct?.(session, from, n, a) },
+  }
 }
 
 interface Client {
@@ -224,6 +240,48 @@ export class RelayHub {
     return [{ session: code, seat: 0, conn: a }, { session: code, seat: 1, conn: b }]
   }
 
+  /** Adds an extension after the constructor's one: a message goes to the first that claims it. */
+  use(ext: RelayExtension): void {
+    this.ext = this.ext ? composeExtensions(this.ext, ext) : ext
+  }
+
+  /**
+   * Starts a session with these 1-4 connected, unseated clients, in this seat order (a lobby round).
+   * Seats get the same `matched` frames as the quick queue. Returns the session code and its seed.
+   */
+  startGroup(conns: string[], payloads: unknown[], opts: { cadence: boolean; holdMs?: number }): { session: string; seed: number } {
+    if (!conns.length || conns.length > MAX_PLAYERS || new Set(conns).size !== conns.length) throw new Error('invalid relay group')
+    for (const id of conns) {
+      if (!this.clients.has(id)) throw new Error('invalid relay group')
+      if (this.seatOf(id)) throw new Error('relay client already seated')
+    }
+    if (this.sessions.size >= MAX_ROOMS) throw new Error('server full')
+    for (const id of conns) this.dropFromWaitLists(id)
+    const code = `q${++this.quickSeq}`
+    const room = this.makeSession(conns.length, opts.cadence, { quick: true })
+    room.holdMs = opts.holdMs ?? RESUME_GRACE_MS
+    room.seats = conns.slice()
+    room.payloads = conns.map((_, i) => payloads[i] ?? null)
+    this.sessions.set(code, room)
+    const seed = this.startRoom(code, room)
+    return { session: code, seed }
+  }
+
+  /**
+   * The acts a spectator needs to replay a started session from its start, or null when the session
+   * is unknown, not started, or its log was truncated (a replay from a shifted log would diverge).
+   */
+  watch(session: string): { players: number; payloads: unknown[]; acts: { from: number; n: number; a: unknown }[] } | null {
+    const room = this.sessions.get(session)
+    if (!room || !room.tokens) return null
+    const acts = room.log.map((e) => ({ from: e.side, n: e.n, a: e.a as unknown }))
+    for (let s = 0; s < room.players; s++) {
+      const first = acts.find((e) => e.from === s)
+      if (first ? first.n !== 1 : room.recv[s] !== 0) return null
+    }
+    return { players: room.players, payloads: room.payloads.slice(), acts }
+  }
+
   endSession(session: string, _reason: string): void {
     const room = this.sessions.get(session)
     if (!room) return
@@ -292,6 +350,7 @@ export class RelayHub {
         if (room.log.length > (room.cadence ? MAX_LOG_ACTS_CADENCE : MAX_LOG_ACTS)) room.log.shift()
         this.send(c.id, { t: 'ack', n })
         this.broadcast(room, { t: 'act', a: msg.a, n, from: side }, side)
+        this.ext?.sessionAct?.(c.roomCode as string, side, n, msg.a)
         return
       }
       case 'ping': return this.send(c.id, { t: 'pong' })
@@ -356,7 +415,7 @@ export class RelayHub {
     }
   }
 
-  private startRoom(code: string, room: Session): void {
+  private startRoom(code: string, room: Session): number {
     const seed = (this.deps.random() * 0xffffffff) >>> 0
     const hostStarts = this.deps.random() < 0.5
     room.tokens = Array.from({ length: room.players }, (_, side) => {
@@ -377,6 +436,7 @@ export class RelayHub {
       if (room.players === 2) m.opp = room.payloads[s === 0 ? 1 : 0] as RelayMatched['opp']
       this.send(c.id, m)
     }
+    return seed
   }
 
   private resume(c: Client, msg: Extract<RelayClientMessage, { t: 'resume' }>, now: number): void {

@@ -12,6 +12,7 @@ import { openStores } from './store/setup.ts'
 import { createWavedash } from './economy/wavedash.ts'
 import { ownerGames } from './store/legacy.ts'
 import { economyRoutes } from './economy/routes.ts'
+import { loadLobbyRules } from './lobby/lobby.ts'
 
 async function main(): Promise<void> {
   const cfg = loadConfig(process.env)
@@ -37,6 +38,8 @@ async function main(): Promise<void> {
     },
     // Payment webhooks: /webhooks/wavedash and /webhooks/stripe.
     http: economyRoutes({ backends: () => stores.backends(), log }),
+    // Timed lobbies: LOBBY_WAIT_MS (default 60000) and LOBBY_MIN_PLAYERS (default 1).
+    lobby: loadLobbyRules(process.env),
   })
   const { port } = await hs.listen()
   console.log(`rooms listening on ${cfg.host}:${port}`)
