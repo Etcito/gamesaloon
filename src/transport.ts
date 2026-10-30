@@ -24,6 +24,7 @@ export interface EndpointSession {
   // Rooms retain their client id in the existing transport log messages.
   id?: string
   message(frame: string): void
+  binary?(frame: Uint8Array): void
   closed(): void
 }
 
@@ -63,7 +64,7 @@ export interface Transport {
 // Minimal structural types for the parts of 'ws' we use (no @types/ws dependency).
 interface WsSocket {
   readyState: number
-  send(data: string): void
+  send(data: string | Uint8Array): void
   close(code?: number, reason?: string): void
   terminate(): void
   ping(): void
@@ -80,6 +81,13 @@ function rawToString(data: unknown): string {
   if (Array.isArray(data)) return Buffer.concat(data as Buffer[]).toString()
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString()
   return String((data as Buffer).toString())
+}
+
+function rawToBytes(data: unknown): Uint8Array {
+  if (Array.isArray(data)) return Buffer.concat(data as Buffer[])
+  if (data instanceof ArrayBuffer) return new Uint8Array(data)
+  const buf = data as Buffer
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
 }
 
 export function roomsEndpoint(hub: RoomHub): Endpoint {
@@ -210,6 +218,9 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
       send(text: string): void {
         if (ws.readyState === WS_OPEN) ws.send(text)
       },
+      sendBinary(data: Uint8Array): void {
+        if (ws.readyState === WS_OPEN) ws.send(data)
+      },
       close(code: number, reason: string): void {
         ws.close(code, reason)
       },
@@ -219,7 +230,6 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
     ws.on('message', (data: unknown, isBinary: boolean) => {
       if (!pending.has(ws) && session === null) return
       try {
-        const frame = rawToString(data)
         // The group's ws limit is the largest; enforce the active endpoint's
         // smaller limit as well, including the default while held.
         const bytes = typeof data === 'string' ? Buffer.byteLength(data)
@@ -229,8 +239,15 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
           ws.close(1009)
           return
         }
+        if (isBinary) {
+          // A pending socket has no endpoint yet, so binary cannot be claimed.
+          if (pending.has(ws)) return
+          if (session?.binary) session.binary(rawToBytes(data))
+          else session?.message(rawToString(data))
+          return
+        }
+        const frame = rawToString(data)
         if (pending.has(ws)) {
-          if (isBinary) return
           for (const candidate of group.endpoints) {
             if (!candidate.claims) continue
             let claimed = false

@@ -10,7 +10,7 @@ import { generateRoomCode, normalizeRoomCode } from './codes.ts'
 import { TokenBucket } from './ratelimit.ts'
 import { iceServersFor } from './turn.ts'
 
-export interface ClientConn { send(text: string): void; close(code: number, reason: string): void }
+export interface ClientConn { send(text: string): void; close(code: number, reason: string): void; sendBinary?(data: Uint8Array): void }
 export interface HubDeps { now(): number; random(): number; seed(): number; log(level: string, msg: string): void }
 
 const RATE_PER_SEC = 40
