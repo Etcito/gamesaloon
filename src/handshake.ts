@@ -13,6 +13,9 @@ import { RelayHub } from './relay/hub.ts'
 import { relayEndpoint } from './relay/endpoint.ts'
 import { MatchService } from './match/service.ts'
 import { matchClaims } from './match/messages.ts'
+import { LobbyService } from './lobby/service.ts'
+import { lobbyClaims } from './lobby/messages.ts'
+import type { LobbyRules } from './lobby/lobby.ts'
 import { createMemoryStore } from './store/memory.ts'
 import type { HandshakeHooks } from './hooks.ts'
 import type { PlayerStore } from './store/types.ts'
@@ -27,6 +30,8 @@ export interface HandshakeOptions {
   autoTick?: boolean
   /** Extra plain HTTP routes (the payment webhooks, see economyRoutes). */
   http?: HttpRoute[]
+  /** Lobby wait and minimum players (see loadLobbyRules for the LOBBY_* environment variables). */
+  lobby?: Partial<LobbyRules>
 }
 
 export interface Handshake {
@@ -53,9 +58,13 @@ export function createHandshake(options: HandshakeOptions = {}): Handshake {
   const relayHub = new RelayHub(deps, match)
   match.attach(relayHub)
   const relay = relayEndpoint(relayHub)
+  // Timed lobbies (docs/lobby.md): after the match service, so match messages keep their handler.
+  const lobby = new LobbyService(deps, options.lobby)
+  relayHub.use(lobby)
+  lobby.attach(relayHub)
   if (relay.claims) {
     const baseClaims = relay.claims
-    relay.claims = (frame) => baseClaims(frame) || matchClaims(frame)
+    relay.claims = (frame) => baseClaims(frame) || matchClaims(frame) || lobbyClaims(frame)
   }
   const version = readVersion()
 

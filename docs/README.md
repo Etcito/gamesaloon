@@ -19,6 +19,7 @@ Etcito, the hosted service built on GameSaloon.
 | [client-integration.md](client-integration.md) | connect a web game, with a short JavaScript example |
 | [protocol.md](protocol.md) | see every rooms and matchmaking message, error code, limit and timeout |
 | [RELAY.md](RELAY.md) | GameNet relay reference (derived from the original relay it was moved from) |
+| [lobby.md](lobby.md) | timed lobbies on the relay: 60 s wait, auto-start with whoever is there, join / spectate / new lobby choice |
 | [matchmaking-and-elo.md](matchmaking-and-elo.md) | queues, pairing windows, results, forfeits, the rating formula, tiers |
 | [economy.md](economy.md) | coins, packs, collection, rewards, purchases and webhooks |
 | [online-data.md](online-data.md) | cloud saves, stats, achievements, player content |
