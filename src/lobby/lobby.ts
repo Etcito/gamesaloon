@@ -105,13 +105,17 @@ export class LobbyBook {
     return undefined
   }
 
-  /** Lobbies an arrival of this format may choose from, oldest first. Empty means: open one directly. */
+  /**
+   * Lobbies an arrival of this format may choose from: joinable ones (waiting, a free seat) first, then
+   * oldest first. Empty means: open one directly.
+   */
   choices(format: LobbyFormat, now: number): LobbySummary[] {
     const key = formatKey(format)
     return [...this.lobbies.values()]
       .filter((l) => formatKey(l.format) === key)
-      .sort((a, b) => a.openedAt - b.openedAt)
       .map((l) => summarize(l, now))
+      .sort((a, b) => Number(b.actions.includes('join')) - Number(a.actions.includes('join'))
+        || this.lobbies.get(a.id)!.openedAt - this.lobbies.get(b.id)!.openedAt)
   }
 
   /** Opens an empty lobby seated with `conn`; its wait starts now. */

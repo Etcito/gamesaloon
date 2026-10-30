@@ -31,6 +31,14 @@ test('book: a full lobby starts early, a started lobby is spectate-only', () => 
   assert.equal(b.choices({ ...F, seats: 2 }, 10)[0].startsInMs, 0)
 })
 
+test('book: a joinable lobby is offered before an older one whose round is on', () => {
+  const b = new LobbyBook()
+  const old = b.open('a', null, F, 0)
+  b.started(old.id, 'q1', 1)
+  const fresh = b.open('b', null, F, 10)
+  assert.deepEqual(b.choices(F, 20).map((s) => s.id), [fresh.id, old.id])
+})
+
 test('book: minPlayers holds the start; choices never mix formats', () => {
   const b = new LobbyBook({ waitMs: 1000, minPlayers: 2 })
   const l = b.open('a', null, F, 0)
