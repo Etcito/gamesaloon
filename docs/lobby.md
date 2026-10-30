@@ -11,9 +11,13 @@ The legacy `queue` (exact party size, FIFO) keeps working as before.
   `LOBBY_WAIT_MS` (default 60000). A later arrival never resets it.
 - When the wait ends, the round starts with whoever is seated, if at least `LOBBY_MIN_PLAYERS`
   (default 1: games fill the empty places with bots). A lobby that fills every seat starts at once.
-- A player who arrives while lobbies of the same format exist gets a choice: **join** a waiting lobby
-  with a free seat, **spectate** a lobby (waiting or playing), or open a **new** empty lobby.
-  A lobby whose round started is spectate-only.
+- A player who enters is never asked anything: they are seated in the oldest waiting lobby of the
+  format with a free seat; if every lobby is playing or full, or there is none, they open a new empty
+  lobby (they wait for others; bots fill after the wait). A lobby whose round started is never joined.
+- Spectating is an explicit request only: `lobby_enter` with `spectate: true` watches the lobby the
+  player would have joined (else the oldest one, waiting or playing); with no lobby it opens one.
+- The old question (join / spectate / new, `lobby_choice` then `lobby_pick`) is kept for clients that
+  ask for it with `lobby_enter { choice: true }`; the default is the automatic join above.
 - A lobby ends when its round's relay session ends, or when its last player leaves before the start.
 - Spectators are never seated: they are not rollback peers, their `act`s go nowhere, peers get no seat
   event about them. They receive a copy of the round's act stream.
@@ -24,8 +28,8 @@ Client to server:
 
 | type | fields | effect |
 | --- | --- | --- |
-| `lobby_enter` | `game` (1-64 chars), `seats` (1-4, the lobby's max seats), `cadence?` (bool), `payload?` (object, <= 512 JSON chars: the seat payload, e.g. `{g, v, name, c}`) | No lobby of that format: opens one, replies `lobby_state`. Otherwise replies `lobby_choice`. |
-| `lobby_pick` | `action`: `join` \| `spectate` \| `new`; `id` (required for join/spectate) | Answers the last `lobby_choice`. |
+| `lobby_enter` | `game` (1-64 chars), `seats` (1-4, the lobby's max seats), `cadence?` (bool), `payload?` (object, <= 512 JSON chars: the seat payload, e.g. `{g, v, name, c}`), `spectate?` (bool, default false: watch instead of playing), `choice?` (bool, default false: legacy, answer with `lobby_choice` when lobbies exist) | Joins the waiting lobby with a free seat, else opens a new one; replies `lobby_state`. With `spectate`: spectator `lobby_state` (+ `lobby_watch` on a playing lobby). With `choice` and lobbies of that format existing: replies `lobby_choice` instead. |
+| `lobby_pick` | `action`: `join` \| `spectate` \| `new`; `id` (required for join/spectate) | Answers the last `lobby_choice` (only sent for `choice: true`). |
 | `lobby_leave` | | Leaves the lobby (player or spectator) and forgets a pending choice. Reply `lobby_left`. |
 | `lobby_presence` | `a` (object, <= 16 keys, <= 256 JSON chars: the sender's hub avatar state, opaque to the server) | Shared hub presence, see below. Never answered; dropped silently outside a lobby or from a seated socket. |
 
@@ -33,7 +37,7 @@ Server to client:
 
 | type | fields |
 | --- | --- |
-| `lobby_choice` | `lobbies: [{ id, phase: 'waiting'\|'playing', players, seats, startsInMs, actions: ('join'\|'spectate')[], names: payload[] }]`, oldest first |
+| `lobby_choice` | only for `lobby_enter { choice: true }`: `lobbies: [{ id, phase: 'waiting'\|'playing', players, seats, startsInMs, actions: ('join'\|'spectate')[], names: payload[] }]`, oldest first |
 | `lobby_state` | `id, phase, role: 'player'\|'spectator', seat` (index among players, -1 for a spectator), `players: payload[], seats, startsInMs, waitMs`, and (added for presence, ignored by older clients) `you` (this client's presence key) and `members: [{ k, role, p }]` (the roster: players in seat order, then spectators in arrival order; `p` is the payload each sent with `lobby_enter`). Sent to players and spectators on every join or leave of a player or spectator while waiting, to spectators when a spectator comes or goes in a playing lobby, and to spectators when the round starts. Clients count `startsInMs` down locally. |
 | `lobby_presence` | `id, from` (the sender's presence key), `a` (its state, verbatim) |
 | `lobby_watch` | to spectators when the round starts (or when they start watching a playing lobby): `id, session, seed, players, opps: payload[], replay` (false when the relay log was truncated: no replay from the start is possible) |
@@ -54,8 +58,9 @@ can fall back to `queue` after a short silence.
 
 - Variable player count: build the round from `matched.players`, not from the requested `seats`.
 - A one-player round (`players: 1`): no remote peer; the game fills the rest with bots.
-- The choice: a screen with join / spectate / new. A client may pick a default by itself after a few
-  seconds (Royal Fiesta: join a waiting lobby, else a new lobby).
+- No choice screen: `lobby_enter` lands the player in a lobby. A client that still receives a
+  `lobby_choice` (a server older than this rule never sends one to a client that does not ask) answers
+  at once with its default (join a waiting lobby, else new); Royal Fiesta does.
 - Spectating: `lobby_state` gives the waiting room and countdown; `lobby_watch` + `lobby_act` carry
   the round's seed and every act from seat `from` (for a rollback game: the peers' packets). Replaying
   the round from them needs an observer mode in the game's rollback session (a session that receives

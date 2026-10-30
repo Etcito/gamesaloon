@@ -69,7 +69,10 @@ test('rules from env: defaults, values, refusals', () => {
 
 test('messages: parse and claims', () => {
   assert.deepEqual(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, payload: { n: 1 } }),
-    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: { n: 1 } })
+    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: { n: 1 }, choice: false, spectate: false })
+  assert.deepEqual(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, choice: true, spectate: true }),
+    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: null, choice: true, spectate: true })
+  assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, choice: 'yes' }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 5 }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 2, payload: { s: 'x'.repeat(600) } }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_pick', action: 'join' }), null)
@@ -104,8 +107,14 @@ function setup(waitMs = 60_000) {
     return { conn, id: hub.connect(conn, '/') }
   }
   const say = (c: { id: string }, m: Record<string, unknown>) => hub.message(c.id, JSON.stringify(m))
-  const enter = (c: { id: string }, name: string, seats = 4) => say(c, { t: 'lobby_enter', game: 'royal-fiesta', seats, cadence: true, payload: { g: 'royal-fiesta', v: 1, name } })
-  return { hub, clock, add, say, enter }
+  // `enter` asks the legacy question (choice: true) so the lobby_choice / lobby_pick tests keep covering it;
+  // `enterAuto` is what a normal client sends: no question, seated at once.
+  const send = (c: { id: string }, name: string, seats: number, extra: Record<string, unknown>) =>
+    say(c, { t: 'lobby_enter', game: 'royal-fiesta', seats, cadence: true, payload: { g: 'royal-fiesta', v: 1, name }, ...extra })
+  const enter = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, { choice: true })
+  const enterAuto = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, {})
+  const enterSpectate = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, { spectate: true })
+  return { hub, clock, add, say, enter, enterAuto, enterSpectate }
 }
 
 test('service: first arrival opens a lobby with the countdown, the round starts at the end with whoever is there', () => {
@@ -136,6 +145,60 @@ test('service: first arrival opens a lobby with the countdown, the round starts 
   assert.equal(mb.youAre, 1)
   assert.equal(ma.seed, mb.seed)
   assert.deepEqual((ma.opps as Record<string, unknown>[]).map((p) => p.name), ['A', 'B'])
+})
+
+test('service: lobby_enter seats the player at once, no question: in the waiting lobby with a free seat', () => {
+  const s = setup()
+  const a = s.add(), b = s.add()
+  s.enterAuto(a, 'A')
+  s.clock.t += 20_000
+  s.enterAuto(b, 'B')
+  assert.equal(b.conn.last('lobby_choice'), undefined)
+  const sb = b.conn.last('lobby_state')!
+  assert.equal(sb.role, 'player')
+  assert.equal(sb.id, a.conn.last('lobby_state')!.id)
+  assert.equal(sb.startsInMs, 40_000)
+  assert.equal((a.conn.last('lobby_state')!.players as unknown[]).length, 2)
+  s.clock.t += 40_000
+  s.hub.tick(s.clock.t)
+  assert.equal(a.conn.last('matched')!.players, 2)
+})
+
+test('service: a full or playing lobby is not joined by default: the arrival lands in a new empty lobby', () => {
+  const s = setup()
+  const a = s.add(), b = s.add(), c = s.add(), d = s.add()
+  s.enterAuto(a, 'A', 2)
+  s.enterAuto(b, 'B', 2)
+  assert.equal(a.conn.last('matched')!.players, 2)
+  s.enterAuto(c, 'C', 2)
+  assert.equal(c.conn.last('lobby_choice'), undefined)
+  const sc = c.conn.last('lobby_state')!
+  assert.equal(sc.role, 'player')
+  assert.equal(sc.startsInMs, 60_000)
+  assert.equal((sc.players as unknown[]).length, 1)
+  // The new lobby is waiting with a free seat: the next arrival joins it, not the played one.
+  s.enterAuto(d, 'D', 2)
+  assert.equal(c.conn.last('matched')!.players, 2)
+})
+
+test('service: spectate: true is the explicit way to watch; with no lobby it opens one', () => {
+  const s = setup(1000)
+  const a = s.add(), w = s.add(), v = s.add(), lone = s.add()
+  s.enterSpectate(lone, 'L')
+  assert.equal(lone.conn.last('lobby_state')!.role, 'player')
+  s.hub.disconnect(lone.id)
+  s.enterAuto(a, 'A')
+  s.enterSpectate(w, 'W')
+  assert.equal(w.conn.last('lobby_state')!.role, 'spectator')
+  assert.equal(w.conn.last('lobby_choice'), undefined)
+  s.clock.t += 1000
+  s.hub.tick(s.clock.t)
+  assert.equal(w.conn.last('lobby_watch')!.players, 1)
+  // Spectating a playing lobby works the same, no card.
+  s.enterSpectate(v, 'V')
+  assert.equal(v.conn.last('lobby_state')!.role, 'spectator')
+  assert.equal(v.conn.last('lobby_watch')!.players, 1)
+  assert.equal(s.hub.seatOf(w.id), null)
 })
 
 test('service: a lone player starts alone when the wait ends (the game fills with bots)', () => {

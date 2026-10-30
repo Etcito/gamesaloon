@@ -25,7 +25,13 @@ export const MAX_PRESENCE_STATE = 256
 const MAX_PRESENCE_KEYS = 16
 
 export type LobbyClientMessage =
-  | { t: 'lobby_enter'; game: string; seats: number; cadence: boolean; payload: Record<string, unknown> | null }
+  | {
+    t: 'lobby_enter'; game: string; seats: number; cadence: boolean; payload: Record<string, unknown> | null
+    /** Opt-in (default false): ask the old join / spectate / new question (lobby_choice) instead of joining by itself. */
+    choice: boolean
+    /** Explicit request (default false): watch the lobby of this format instead of playing in it. */
+    spectate: boolean
+  }
   | { t: 'lobby_pick'; action: LobbyAction; id: string | null }
   | { t: 'lobby_leave' }
   | { t: 'lobby_presence'; a: Record<string, unknown> }
@@ -58,7 +64,13 @@ export function parseLobbyMessage(msg: Record<string, unknown>): LobbyClientMess
       if (cadence !== undefined && typeof cadence !== 'boolean') return null
       if (payload !== undefined && payload !== null && !isObject(payload)) return null
       if (payload && JSON.stringify(payload).length > MAX_LOBBY_PAYLOAD) return null
-      return { t: 'lobby_enter', game, seats: seats as number, cadence: cadence === true, payload: (payload as Record<string, unknown>) ?? null }
+      const { choice, spectate } = msg
+      if (choice !== undefined && typeof choice !== 'boolean') return null
+      if (spectate !== undefined && typeof spectate !== 'boolean') return null
+      return {
+        t: 'lobby_enter', game, seats: seats as number, cadence: cadence === true, payload: (payload as Record<string, unknown>) ?? null,
+        choice: choice === true, spectate: spectate === true,
+      }
     }
     case 'lobby_pick': {
       const { action, id } = msg

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Etcito
 // Timed lobbies, pure state (no sockets, no clock of its own): the first player opens a lobby, the
 // round starts when the wait ends (or when every seat is taken) with whoever is there. A player who
-// arrives while lobbies of the same format exist chooses: join a waiting one, spectate one, or open
-// a new empty lobby. Spectators are never seated, so they never become rollback peers.
+// arrives is seated in a waiting lobby with a free seat, else opens a new one (the old join / spectate / open
+// question stays behind lobby_enter choice:true). Spectators are never seated, so they never become rollback peers.
 
 export const DEFAULT_LOBBY_WAIT_MS = 60_000
 export const DEFAULT_LOBBY_MIN_PLAYERS = 1

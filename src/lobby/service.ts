@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 // LobbyService: timed lobbies on the relay socket (a RelayExtension, see docs/lobby.md).
-// lobby_enter -> lobby_choice when lobbies of that format exist, else a new lobby (lobby_state).
-// lobby_pick join|spectate|new. When the wait ends (or the lobby is full) the seated players get the
+// lobby_enter -> the player is seated at once (lobby_state): in the oldest waiting lobby of its format with a
+// free seat, else in a new empty lobby; `spectate: true` watches instead (explicit request only). The old
+// question (lobby_choice, then lobby_pick join|spectate|new) is asked only for `choice: true`. When the wait ends (or the lobby is full) the seated players get the
 // relay's usual `matched` (RelayHub.startGroup); spectators get lobby_watch then every act as lobby_act.
 import type { RelayExtension, RelayHub, RelaySeatRef } from '../relay/hub.ts'
 import { LobbyBook, roster } from './lobby.ts'
@@ -47,6 +48,25 @@ export class LobbyService implements RelayExtension {
       this.leave(conn, now)
       const lobbies = this.book.choices(format, now)
       if (!lobbies.length) return this.open(conn, format, msg.payload, now)
+      if (!msg.choice) {
+        if (msg.spectate) {
+          // Spectating is an explicit request: the lobby that would have been joined, else the oldest one.
+          const target = lobbies.find((l) => l.actions.includes('join')) ?? lobbies[0]
+          this.book.spectate(conn, target.id, msg.payload)
+          const lobby = this.book.get(target.id)!
+          this.publish(lobby, now)
+          if (lobby.phase === 'playing') this.watchFrom(conn, lobby)
+          return true
+        }
+        // choices() lists joinable lobbies first, so the first one is the one to join, if any can be.
+        const joinable = lobbies.find((l) => l.actions.includes('join'))
+        if (!joinable) return this.open(conn, format, msg.payload, now)
+        const r = this.book.join(conn, msg.payload, joinable.id)
+        if (typeof r === 'string') return this.open(conn, format, msg.payload, now)
+        this.publish(r, now)
+        this.startDue(now)
+        return true
+      }
       this.pending.set(conn, { format, payload: msg.payload })
       this.send(conn, { t: 'lobby_choice', lobbies })
       return true
