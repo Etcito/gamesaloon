@@ -40,6 +40,9 @@ It holds every `loadConfig` variable (defaults from `src/config.ts`):
 | `MAX_CLIENTS` | `2000` | Maximum number of connected clients |
 | `ALLOWED_ORIGINS` | (empty = any) | Comma-separated allowed `Origin` values |
 | `LOG_LEVEL` | `info` | `error`, `info` or `debug` |
+| `RELAY_GAMES` | (empty = zone rooms refused) | Comma-separated `game:maxPeers` seat caps for relay zone rooms |
+| `RELAY_MAX_BIN_BYTES` | `20000` | Largest binary frame accepted from a zone member, in bytes |
+| `RELAY_BIN_RATE_PER_SEC` | `2000` | Binary frames per second allowed per zone member |
 
 The deploy script installs this file only when `/etc/kart-rooms.env` is absent,
 so an operator's edits are never overwritten.
