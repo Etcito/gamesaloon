@@ -4,7 +4,7 @@
 
 A server-authoritative economy per game: a coin balance, closed card packs, a card collection, rewards, a coin shop, and paid purchases (Wavedash consumables, Stripe Checkout). The client never sends an amount, a price or a card; it names a product, a reward or a pack type, and the server decides. Code: `src/economy/`. Wire rules: [CONTRACT.md](CONTRACT.md) section 8.
 
-Contents: [Where the data lives](#where-the-data-lives) · [Messages](#messages) · [The catalog](#the-catalog-economycatalog) · [Products](#products) · [Idempotency](#idempotency) · [Wavedash](#wavedash) · [Stripe](#stripe) · [Refunds](#refunds-and-the-purchase-ban) · [Webhooks](#webhooks) · [Settings](#settings-keys) · [Running it yourself](#running-it-yourself)
+Contents: [Where the data lives](#where-the-data-lives) · [Messages](#messages) · [The catalog](#the-catalog-economycatalog) · [Products](#products) · [Per-game configuration file](#per-game-configuration-file) · [Idempotency](#idempotency) · [Wavedash](#wavedash) · [Stripe](#stripe) · [Refunds](#refunds-and-the-purchase-ban) · [Webhooks](#webhooks) · [Settings](#settings-keys) · [Running it yourself](#running-it-yourself)
 
 ## Where the data lives
 
@@ -110,6 +110,63 @@ The card pool, pack rules and rewards are data: the JSON text stored in the `etc
 
 Rows of `etc_products`: `provider` (`coins`, `wavedash` or `stripe`), `code` (unique per provider), `label`, `description`, `price` (cents for money, coins for provider `coins`), `currency`, `grant_coins`, `grant_packs` (a JSON text such as `{"starter":1}`), `active`, `sort_order`. A product that grants nothing, or has invalid numbers, is ignored. The server reads products when needed (nothing to restart). For provider `wavedash` the `code` is the Wavedash consumable identifier; for `stripe` it names the product Checkout sells.
 
+## Per-game configuration file
+
+One file carries a game's whole economy: `{ catalog, products, settings? }`. `catalog` is the `economy.catalog` JSON object (or its JSON text), `products` are `etc_products` rows keyed by `provider` + `code`, and the optional `settings` holds the chat filter and the gift limits. The machine-readable shape is [schemas/game-economy.schema.json](../schemas/game-economy.schema.json) (JSON Schema draft 2020-12); the runtime validator in `src/economy/gameconfig.ts` mirrors it and refuses a bad file by naming the faulty field.
+
+```json
+{
+  "catalog": {
+    "cards": [{ "id": "card.1", "rarity": "basic" }],
+    "currencies": ["stars"],
+    "shop": {
+      "drop": "star-drop", "slots": ["hat", "cape"],
+      "rarities": {
+        "plain": { "price": { "coins": 10, "stars": 1 } },
+        "shiny": { "price": { "coins": 30, "stars": 3 } }
+      },
+      "items": [
+        { "id": "hat.sunny", "name": "Sunny Hat", "slot": "hat", "rarity": "plain", "asset": "hat.sunny", "price": { "coins": 10, "stars": 1 }, "edition_cap": 2 },
+        { "id": "cape.wind", "name": "Wind Cape", "slot": "cape", "rarity": "shiny", "asset": "cape.wind", "price": { "coins": 30, "stars": 3 } }
+      ],
+      "commission": { "currency": "stars" }
+    },
+    "round_rewards": { "finish": { "coins": 5 }, "champion": { "currencies": { "stars": 1 } } }
+  },
+  "products": [
+    { "provider": "coins", "code": "coins-100", "label": "100 coins", "price": 100, "currency": "coins", "grant_coins": 100, "grant_packs": "", "active": true }
+  ],
+  "settings": {
+    "filter": { "min_length": 2, "max_length": 40, "banned_words": ["spam"], "no_url": true },
+    "gifts": { "count": 3, "window_ms": 86400000 }
+  }
+}
+```
+
+`settings.filter` becomes the `economy.filter` row and `settings.gifts` the `economy.gifts` row (see [Settings keys](#settings-keys)). A Kekkai-style export with no new section keeps working: a catalog without `currencies`, `shop` or `round_rewards`, its products as before and no `settings` is still a valid file and imports unchanged.
+
+### `npm run game:import`
+
+```sh
+ETCITO_URL=https://tables.example/ ETCITO_GAME_KEYS='{"my-game":"gsk_..."}' \
+  npm run game:import -- economy.json --game my-game
+```
+
+The command (`src/economy/importCli.ts`) always writes through the HTTP table store: `ETCITO_URL` is the base URL of the table service and the game's service key comes from `ETCITO_GAME_KEYS_FILE` (multi-creator mode) or `ETCITO_GAME_KEYS`. The key selects the mission; `--game` must equal that mission's `etc_game.handshake_game`, otherwise the import is refused before any write (wrong key or wrong `--game`). It is idempotent: a row whose stored value already equals the file is not written, so re-importing the same file prints `0 inserted, 0 updated` and touches nothing. The whole file is validated before the first write, so a refused file leaves every previous value in place and the error names the faulty field (for example `shop.items[hat.sunny].slot`), never its value. Settings and products absent from the file are left untouched (the table API has no delete). It prints the counts of inserted, updated and unchanged settings and products.
+
+### `gamesaloon/import`
+
+The package also exports the same writer as `./import`:
+
+```js
+import { importGameConfig } from 'gamesaloon/import'
+
+const result = await importGameConfig(api, text, { game: 'my-game' })
+// result = { settings: {inserted, updated, unchanged}, products: {inserted, updated, unchanged} }
+```
+
+`api` is a `TableApi` bound to the mission's tables. This is what the Etcito MCP flow uses to create a game's mission: it validates the file and writes the mission's settings and products without spawning the CLI. Validation, idempotency, the previous-values rule and the `handshake_game` check are the same as above.
+
 ## Idempotency
 
 Every mutation is committed by one row of the ledger with a unique `tx_id`. A client `op` is namespaced by player. Replaying the same `op` with the same parameters returns the original result with `applied: false` and changes nothing; the same `op` with other parameters fails with `tx_conflict`. Wavedash purchases are keyed by the purchase id, Stripe ones by the Checkout session id, so a duplicated webhook grants once. The wallet, pack and card rows are a projection of the ledger; every operation first applies the player's not-yet-projected ledger rows, which repairs a crash between the two. An in-process lock serialises operations of one server instance: run **one instance** per set of tables.
@@ -157,6 +214,8 @@ Rows of `etc_settings` (`key`, `value`):
 | Key | Meaning |
 |---|---|
 | `economy.catalog` | the JSON catalog above |
+| `economy.filter` | JSON `{min_length, max_length, banned_words, no_url}`: the description filter of `eco_commission`; a refusal answers `description_refused`. Unset = no filter |
+| `economy.gifts` | JSON `{count, window_ms}`: at most `count` gifts per player in `window_ms` milliseconds; over it `rate_limited`. Unset = no limit |
 | `economy.allow_playtest` | `1` or `true`: accept Wavedash `PLAYTEST` receipts. Leave unset in production |
 | `economy.refund_ban_days` | days of purchase ban after a refund (default 30, 0 = none) |
 

@@ -1,4 +1,4 @@
-# GameSaloon online contract (r9)
+# GameSaloon online contract (r10)
 
 The shared rules of the GameSaloon server (internally called Handshake), the optional AI residents and every game client.
 One authority for the wire rules: this file. A change = a new revision number + one changelog line at the bottom. Written in English.
@@ -131,6 +131,15 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 | `unknown_product` | No such product. |
 | `unknown_reward` | No such reward. |
 | `unknown_pack` | No such pack type. |
+| `unknown_item` | No such item in the catalog shop. |
+| `no_price` | The shop item has no price in that currency. |
+| `already_owned` | The shop item or the inbox item is already in the collection. |
+| `sold_out` | Every capped copy of the shop item is committed. |
+| `description_refused` | The commission description failed the game's `economy.filter`. |
+| `already_claimed` | The inbox entry was already claimed. |
+| `not_owned` | The player does not own the item being gifted. |
+| `self_gift` | A player tried to gift themselves. |
+| `blocked` | The recipient blocked gifts from the sender. |
 | `purchase_refunded` | The purchase was refunded. |
 | `purchases_blocked` | Real-money purchases are blocked after a refund. |
 | `bad_receipt` | The Wavedash receipt failed verification. |
@@ -161,7 +170,7 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 - Forfeit: a seat not resumed with its token within 90000 ms loses; both seats absent means void. The relay session then ends.
 - Every match end calls `hooks.onMatchEnd`.
 
-## 8. Economy (r4)
+## 8. Economy (r4, r10)
 
 One economy per game (never shared between games). Everything below needs `auth`; an unauthenticated
 connection gets `auth_required`. The server is the only authority: the client never sends an amount, a price or a card. (r6 refund rules are in the changelog and in economy.md.)
@@ -172,6 +181,7 @@ connection gets `auth_required`. The server is the only authority: the client ne
 `external_id` unique per provider, `status` `pending` | `granted` | `refunded`), `etc_ledger` (journal and idempotency guard, unique `tx_id`).
 The card pool, the pack rules (size, tiers, weights, guaranteed last slot, duplicate refund) and the rewards are DATA: the JSON text of
 `etc_settings` key `economy.catalog` (`{cards:[{id,rarity,token?}], packs:{<pack_type>:{kind:"random"|"fixed",...}}, rewards:{<id or prefix*>:{coins?,packs?}}}`).
+r10 adds the optional `currencies`, `shop` (cosmetic items with per-currency prices and an optional edition cap) and `round_rewards` sections of that JSON.
 Prices and what a purchase contains are the rows of `etc_products` (`price` in minor units, or coins for provider `coins`; `grant_coins`, `grant_packs` `{"<pack_type>": n}`).
 
 The generic economy tables are declared too: `etc_balances` (`player_id`, `currency`, `quantity`, `ledger_id`, `updated_at`; unique `player_id` + `currency`; the projection of the extra currencies a game declares, built like `etc_packs`),
@@ -187,6 +197,10 @@ Every mutation is committed by ONE ledger row with a unique `tx_id`. Client oper
 client; the server namespaces it by player. The same `op` with the same parameters answers the original result with `applied: false`
 and changes nothing; the same `op` with other parameters is `tx_conflict`. A reward is granted once per player and `reward_id`.
 Purchases are keyed by the provider's id (`purchaseId`, Checkout session id). A replay, a duplicated webhook or a concurrent delivery grants once.
+A round reward is one ledger fact per `match|round|player|kind`, whatever `op` is sent. A shop purchase and a commission are keyed by the
+player's `op`. A gift is keyed by its `op` too: it moves exactly one copy from the sender to the recipient's inbox and counts once toward the
+gift limit. The hard cap of a capped shop item is enforced inside the purchase's own ledger commit: the committed copy carries the unique
+`edition_key` `<item>#<serial>`, so two buyers of one serial cannot both commit (`etc_item_sales` is only its projection).
 
 ### Client to server
 - `eco_get` { op? }. Replies `eco_state`.
@@ -196,10 +210,30 @@ Purchases are keyed by the provider's id (`purchaseId`, Checkout session id). A 
 - `eco_open` { op, pack_type }. The SERVER draws the cards (or reveals a fixed pack), records them in the collection and refunds the duplicates as the pack definition says. Replies `eco_opened` { pack_type, cards: [{id, rarity, is_new, duplicate}], refund, coins, remaining, applied }. Errors `unknown_pack`, `no_packs`, `tx_conflict`.
 - `eco_wavedash` { op?, receipt_jwt, user_jwt? }. The Wavedash `PURCHASE_COMPLETED` receipt (and `getUserJwt()`). The server verifies the receipt (RS256 against the Wavedash JWKS, cached; `typ` `wavedash-purchase+jwt`; `iss`; `aud` one of the game's Wavedash ids = the enabled `wavedash` rows of `etc_publishers`; `env` `PRODUCTION` unless `etc_settings` `economy.allow_playtest` is `1`; `ptype` `CONSUMABLE`), that its `sub` is an identity of the authenticated player (and equals the user JWT `sub`, same `gcid`), then credits the product whose `code` is the receipt's `contentIdentifier`. Replies `eco_purchase` { provider, external_id, product, status:"granted", coins, granted, applied }. Only after this reply may the client call `Wavedash.fulfillPurchase(purchaseId)`. Errors `bad_receipt`, `not_production`, `receipt_mismatch`, `unknown_product`, `purchase_refunded`, `economy_unavailable`.
 - `eco_stripe` { op?, product, return_url }. Opens a Stripe Checkout for an active `stripe` product. Replies `eco_checkout` { url, session_id }: the client opens `url` in the browser. Coins arrive only when Stripe confirms the payment (webhook); the player's open connections receive an `eco_state` push, or the client asks `eco_get` when the player comes back. Errors `unknown_product`, `bad_return_url`, `payment_unavailable`, `economy_unavailable`.
+- `eco_shop` { op? }. The cosmetic shop of the catalog, with the copies sold and left of each item. Replies `eco_shop` { drop, slots, rarities, items }. Error `economy_unavailable` when the catalog has no shop.
+- `eco_shop_buy` { op, item, currency }. Buys one copy of a shop item in one of its prices. Replies `eco_shop_bought` { item, currency, price, coins, balances, remaining, applied }. Errors `unknown_item`, `no_price`, `already_owned`, `insufficient_funds`, `sold_out`, `tx_conflict`.
+- `eco_round` { op?, match_id, round (integer 0..1000), player, kind }. A round reward reported by the match host; `player` is the Wavedash user id of the rewarded player and `kind` a key of the catalog's `round_rewards`. The first reporter of a `match_id` hosts that match. Replies `eco_round` { match_id, round, player, kind, granted: {coins, currencies}, applied }. Errors `forbidden` (another player hosts that match), `unknown_reward`, `bad_message`.
+- `eco_commission` { op, slot, rarity, description (1..1000 chars) }. Buys one custom commission; `slot` and `rarity` must be declared by the catalog shop. Replies `eco_commissioned` { commission, applied }, `commission` = { id, slot, rarity, description, status: `pending` | `in_production` | `shipped`, created_at }. Errors `economy_unavailable`, `bad_message`, `description_refused`, `insufficient_funds`, `tx_conflict`.
+- `eco_commissions` { op? }. The player's commissions, newest first. Replies `eco_commissions` { items }.
+- `eco_queue` { op? }. The commissions of the next shop drop (not shipped), oldest first, without player ids. Replies `eco_queue` { items }.
+- `eco_inbox` { op? }. The player's inbox, newest first. Replies `eco_inbox` { entries, unread }; `entries` = [{ id, item, sender: {kind: `owner` | `system` | `player`, id}, message, date, claimed }] (`item` is null for a message-only entry, `date` is an ISO string, `unread` counts the unclaimed entries).
+- `eco_claim` { op, id }. Claims one inbox entry into the collection. Replies `eco_claimed` { id, item, applied }. Errors `not_found`, `already_claimed`, `already_owned`, `tx_conflict`.
+- `eco_gift` { op, to, item, message? (0..280 chars) }. Gives one owned copy of `item` to the player of the Wavedash user id `to`, through their inbox. Replies `eco_gifted` { to, item, applied }. Errors `not_found`, `self_gift`, `blocked`, `rate_limited`, `not_owned`, `tx_conflict`, `bad_message`.
+- `eco_block` { op?, player, blocked: boolean }. Blocks or unblocks gifts from the player of that Wavedash user id. Replies `eco_blocked` { player, blocked }. Errors `not_found`, `bad_message`.
 
 ### Server to client
 - `eco_state` { op?, coins, version, packs: [{pack_type, quantity}], cards: {<card id>: quantity} }. Also pushed when a webhook purchase or refund changes the player's economy.
-- Errors: `{ t:'error', reason, op? }` (the `op` of the request is echoed when it had one). New reasons: `economy_unavailable`, `insufficient_funds`, `no_packs`, `tx_conflict`, `unknown_product`, `unknown_reward`, `unknown_pack`, `purchase_refunded`, `bad_receipt`, `receipt_mismatch`, `not_production`, `bad_return_url`, `payment_unavailable`.
+- `eco_shop` { op?, drop, slots, rarities, items: [{ id, name, slot, rarity, asset, price, edition_cap, sold, remaining }] }. `price` maps a currency to its price; `edition_cap` and `remaining` are null for an uncapped item.
+- `eco_shop_bought` { op, item, currency, price, coins, balances, remaining, applied }. `balances` maps every extra currency to its new quantity; `remaining` is null for an uncapped item.
+- `eco_round` { op?, match_id, round, player, kind, granted: {coins, currencies}, applied }.
+- `eco_commissioned` { op, commission: { id, slot, rarity, description, status, created_at }, applied }.
+- `eco_commissions` { op?, items: [commission] }.
+- `eco_queue` { op?, items: [commission] }.
+- `eco_inbox` { op?, entries: [{ id, item, sender: {kind, id}, message, date, claimed }], unread }.
+- `eco_claimed` { op, id, item, applied }.
+- `eco_gifted` { op, to, item, applied }.
+- `eco_blocked` { op?, player, blocked }.
+- Errors: `{ t:'error', reason, op? }` (the `op` of the request is echoed when it had one). New reasons: `economy_unavailable`, `insufficient_funds`, `no_packs`, `tx_conflict`, `unknown_product`, `unknown_reward`, `unknown_pack`, `purchase_refunded`, `bad_receipt`, `receipt_mismatch`, `not_production`, `bad_return_url`, `payment_unavailable`, `unknown_item`, `no_price`, `already_owned`, `sold_out`, `description_refused`, `already_claimed`, `not_owned`, `self_gift`, `blocked`. Any economy message can also answer `store_unavailable` when a table call fails.
 
 ### Webhooks (HTTP, no session; nothing is trusted before it is verified)
 - `POST /webhooks/wavedash` body `{receiptJwt}`: the receipt is verified as above (the game is found from the receipt audience), the buyer is the player of the identity `wavedash` / `sub` (created if new), the product is credited, then the server calls `POST https://api.wavedash.com/api/purchases/{purchaseId}/fulfill`. `purchase.refunded` takes back the coins and the still-closed packs of that purchase (opened cards are kept), and a refund seen before its purchase blocks the purchase. 2xx only when handled; a product missing from `etc_products` answers 409 and a failed fulfill 502, so Wavedash retries.
@@ -290,3 +324,4 @@ On itch.io and the web, only Handshake is used.
 - r7 (2026-10-15): game-scoped Stripe webhook, Wavedash audience disambiguation (owner first, else refused), opt-in file-backed game registry with per-game reload, creator room and data limits. Additive: nothing changes without `ETCITO_GAME_KEYS_FILE`.
 - r8 (2026-10-16): documentation pass only, no wire change. Product names and internal paths removed; section 1 describes the open-source components; sections 3 and 5 aligned with the code (tiers are constants, the K formula, no fixed prices); the refund rule now says the balance never goes below zero (as r6 and the code already did).
 - r9 (2026-10-21): ranked play: `ladder` in both directions (`page_size` 10, guest `me` null, 45 s cache), error `ranked_requires_account`, `match.opponent` rating/tier/placement/games, `match_end` reason/weight/duration_ms/rewardable/rating.tier, graceful-leave forfeit (`left`), lone draw, 10-minute inactivity void, 180 s half weight, `etc_matches` match records (idempotent, written before `onMatchEnd`) and `rewardable` (no server coin credit). Additive.
+- r10 (2026-10-31): additive; game-agnostic shop, currencies, round rewards, commissions, inbox, gifts, blocks; the per-game config file and import.
