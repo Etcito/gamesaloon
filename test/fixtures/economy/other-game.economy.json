@@ -1,0 +1,79 @@
+{
+  "catalog": {
+    "cards": [{ "id": "card.1", "rarity": "basic" }],
+    "currencies": ["stars"],
+    "shop": {
+      "drop": "star-drop",
+      "slots": ["hat", "cape", "boots"],
+      "rarities": {
+        "plain": { "price": { "coins": 10, "stars": 1 } },
+        "shiny": { "price": { "coins": 30, "stars": 3 } }
+      },
+      "items": [
+        {
+          "id": "hat.sunny",
+          "name": "Sunny Hat",
+          "slot": "hat",
+          "rarity": "plain",
+          "asset": "hat.sunny",
+          "price": { "coins": 10, "stars": 1 },
+          "edition_cap": 2
+        },
+        {
+          "id": "cape.wind",
+          "name": "Wind Cape",
+          "slot": "cape",
+          "rarity": "shiny",
+          "asset": "cape.wind",
+          "price": { "coins": 30, "stars": 3 }
+        },
+        {
+          "id": "boots.moon",
+          "name": "Moon Boots",
+          "slot": "boots",
+          "rarity": "plain",
+          "asset": "boots.moon",
+          "price": { "coins": 10 }
+        }
+      ],
+      "commission": { "currency": "stars" }
+    },
+    "round_rewards": {
+      "finish": { "coins": 5 },
+      "champion": { "currencies": { "stars": 1 } }
+    }
+  },
+  "products": [
+    {
+      "provider": "coins",
+      "code": "coins-100",
+      "label": "100 coins",
+      "price": 100,
+      "currency": "coins",
+      "grant_coins": 100,
+      "grant_packs": "",
+      "active": true,
+      "sort_order": 0
+    },
+    {
+      "provider": "wavedash",
+      "code": "coins-250",
+      "label": "250 coins",
+      "price": 200,
+      "currency": "EUR",
+      "grant_coins": 250,
+      "grant_packs": "",
+      "active": true,
+      "sort_order": 1
+    }
+  ],
+  "settings": {
+    "filter": {
+      "min_length": 2,
+      "max_length": 40,
+      "banned_words": ["spam", "slur"],
+      "no_url": true
+    },
+    "gifts": { "count": 3, "window_ms": 86400000 }
+  }
+}

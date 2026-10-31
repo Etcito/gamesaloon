@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:gamesaloon:schema:game-economy",
+  "title": "GameSaloon per-game economy configuration",
+  "description": "The one per-game economy file: { catalog, products, settings? }. catalog is the economy.catalog JSON object or its text; products are etc_products rows; settings carry the optional chat filter and gift limits.",
+  "type": "object",
+  "required": ["catalog", "products"],
+  "additionalProperties": false,
+  "properties": {
+    "catalog": {
+      "description": "The economy.catalog JSON object, or the JSON text stored in etc_settings.",
+      "oneOf": [
+        { "$ref": "#/$defs/catalog" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "products": {
+      "description": "etc_products rows; code is unique per provider.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/product" }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "filter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_length", "max_length", "banned_words", "no_url"],
+          "properties": {
+            "min_length": { "type": "integer", "minimum": 0 },
+            "max_length": { "type": "integer", "minimum": 0 },
+            "banned_words": {
+              "type": "array",
+              "maxItems": 10000,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "no_url": { "type": "boolean" }
+          }
+        },
+        "gifts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "window_ms"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 1 },
+            "window_ms": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9:_.-]{1,64}$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "priceMap": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+    },
+    "card": {
+      "type": "object",
+      "required": ["id", "rarity"],
+      "properties": {
+        "id": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "integer" }] },
+        "rarity": { "$ref": "#/$defs/id" },
+        "token": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/id" }
+      }
+    },
+    "pack": {
+      "type": "object",
+      "properties": {
+        "kind": { "enum": ["random", "fixed"], "default": "random" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "weights": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0 } },
+        "tier_of": { "type": "object", "additionalProperties": { "$ref": "#/$defs/id" } },
+        "guarantee": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["slot", "min_tier"],
+              "additionalProperties": false,
+              "properties": {
+                "slot": { "const": "last" },
+                "min_tier": { "$ref": "#/$defs/id" }
+              }
+            }
+          ]
+        },
+        "duplicate_refund": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "cards": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "fixed" } }, "required": ["kind"] },
+          "then": { "required": ["cards"] },
+          "else": { "required": ["size", "tiers", "weights"] }
+        }
+      ]
+    },
+    "reward": {
+      "type": "object",
+      "properties": {
+        "coins": { "$ref": "#/$defs/count" },
+        "packs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/count" } }
+      }
+    },
+    "shop": {
+      "type": "object",
+      "required": ["drop", "slots", "rarities", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "drop": { "$ref": "#/$defs/id" },
+        "slots": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "rarities": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "required": ["price"],
+            "additionalProperties": false,
+            "properties": { "price": { "$ref": "#/$defs/priceMap" } }
+          }
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "slot", "rarity", "asset", "price"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "name": { "type": "string", "minLength": 1 },
+              "slot": { "$ref": "#/$defs/id" },
+              "rarity": { "$ref": "#/$defs/id" },
+              "asset": { "type": "string", "minLength": 1 },
+              "price": { "$ref": "#/$defs/priceMap" },
+              "edition_cap": {
+                "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1, "maximum": 1000000 }]
+              }
+            }
+          }
+        },
+        "commission": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["currency"],
+              "additionalProperties": false,
+              "properties": { "currency": { "$ref": "#/$defs/id" } }
+            }
+          ]
+        }
+      }
+    },
+    "roundReward": {
+      "type": "object",
+      "properties": {
+        "coins": { "$ref": "#/$defs/count" },
+        "currencies": { "type": "object", "additionalProperties": { "$ref": "#/$defs/count" } }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cards": { "type": "array", "maxItems": 20000, "items": { "$ref": "#/$defs/card" } },
+        "packs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/pack" } },
+        "rewards": { "type": "object", "additionalProperties": { "$ref": "#/$defs/reward" } },
+        "currencies": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "allOf": [{ "$ref": "#/$defs/id" }, { "not": { "const": "coins" } }] }
+        },
+        "shop": { "$ref": "#/$defs/shop" },
+        "round_rewards": { "type": "object", "additionalProperties": { "$ref": "#/$defs/roundReward" } }
+      }
+    },
+    "product": {
+      "type": "object",
+      "required": ["provider", "code", "label", "price", "currency", "grant_coins", "grant_packs"],
+      "properties": {
+        "provider": { "enum": ["wavedash", "stripe", "coins"] },
+        "code": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "integer", "minimum": 0 },
+        "currency": { "type": "string", "minLength": 1 },
+        "grant_coins": { "type": "integer", "minimum": 0 },
+        "grant_packs": { "type": "string", "description": "JSON text {\"<pack_type>\": count}" },
+        "active": { "type": "boolean" },
+        "sort_order": { "type": "integer" }
+      }
+    }
+  }
+}

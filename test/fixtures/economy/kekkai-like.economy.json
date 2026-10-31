@@ -1,0 +1,89 @@
+{
+  "catalog": {
+    "cards": [
+      { "id": "1", "rarity": "basic" },
+      { "id": "2", "rarity": "basic" },
+      { "id": "3", "rarity": "basic" },
+      { "id": "10", "rarity": "rare" },
+      { "id": "11", "rarity": "rare" },
+      { "id": "20", "rarity": "epic" },
+      { "id": "30", "rarity": "legendary" },
+      { "id": "99", "rarity": "basic", "token": true }
+    ],
+    "packs": {
+      "shop": {
+        "kind": "random",
+        "size": 5,
+        "tiers": ["common", "rare", "epic", "legendary"],
+        "weights": { "common": 70, "rare": 22, "epic": 6.5, "legendary": 1.5 },
+        "tier_of": { "basic": "common" },
+        "guarantee": { "slot": "last", "min_tier": "rare" },
+        "duplicate_refund": 3
+      },
+      "story:a:1": { "kind": "fixed", "cards": ["20", "1", "10"] }
+    },
+    "rewards": {
+      "tuto:intro": { "coins": 25 },
+      "enc:*": { "coins": 20 },
+      "bonus:*": { "coins": 500 },
+      "story:a": { "packs": { "story:a:1": 1 } }
+    }
+  },
+  "products": [
+    {
+      "provider": "coins",
+      "code": "pack-shop",
+      "label": "Pack",
+      "price": 100,
+      "currency": "coins",
+      "grant_coins": 0,
+      "grant_packs": "{\"shop\":1}",
+      "active": true,
+      "sort_order": 0
+    },
+    {
+      "provider": "coins",
+      "code": "pack-shop-5",
+      "label": "Pack",
+      "price": 450,
+      "currency": "coins",
+      "grant_coins": 0,
+      "grant_packs": "{\"shop\":5}",
+      "active": true,
+      "sort_order": 0
+    },
+    {
+      "provider": "wavedash",
+      "code": "coins-250",
+      "label": "Pack",
+      "price": 200,
+      "currency": "EUR",
+      "grant_coins": 250,
+      "grant_packs": "",
+      "active": true,
+      "sort_order": 0
+    },
+    {
+      "provider": "wavedash",
+      "code": "bundle",
+      "label": "Pack",
+      "price": 500,
+      "currency": "EUR",
+      "grant_coins": 100,
+      "grant_packs": "{\"shop\":2}",
+      "active": true,
+      "sort_order": 0
+    },
+    {
+      "provider": "stripe",
+      "code": "coins-250",
+      "label": "Pack",
+      "price": 200,
+      "currency": "EUR",
+      "grant_coins": 250,
+      "grant_packs": "",
+      "active": true,
+      "sort_order": 0
+    }
+  ]
+}
