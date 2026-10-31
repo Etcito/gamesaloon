@@ -32,7 +32,7 @@ export const ETCITO_TABLES: Record<string, { columns: string[]; unique: string[]
   etc_ranked_results: { columns: ["match_id", "result_json"], unique: [["match_id"]] },
   etc_matches: { columns: ["match_id", "game", "queue", "status", "reason", "ended_at", "record"], unique: [["match_id"]] },
   etc_rating_events: { columns: ["ev_key", "player_id", "game", "match_id", "r_before", "r_after", "games"], unique: [["ev_key"]] },
-  etc_ledger: { columns: ["tx_id", "player_id", "op", "game", "coin_delta", "pack_delta", "params", "result_json", "created_at"], unique: [["tx_id"]] },
+  etc_ledger: { columns: ["tx_id", "player_id", "op", "game", "coin_delta", "pack_delta", "params", "result_json", "created_at", "edition_key"], unique: [["tx_id"], ["edition_key"]] },
   etc_game: { columns: ["code", "name", "repo_url", "repo_branch", "handshake_game", "elo_start", "elo_k_floor", "placement_games", "queues"], unique: [["code"]] },
   etc_publishers: { columns: ["platform", "label", "external_id", "enabled"], unique: [["platform", "external_id"]] },
   etc_settings: { columns: ["key", "value"], unique: [["key"]] },
@@ -49,6 +49,13 @@ export const ETCITO_TABLES: Record<string, { columns: string[]; unique: string[]
   etc_ugc: { columns: ["item_id", "player_id", "ugc_type", "title", "description", "visibility", "hidden", "content_type", "content", "size", "hash", "version", "wavedash_ref", "created_at", "updated_at"], unique: [["item_id"]] },
   etc_purchase_bans: { columns: ["player_id", "until", "reason", "purchase_ref", "created_at"], unique: [] },
   etc_deploy_runs: { columns: ["run_id", "request_id", "game", "action", "artifact", "build_id", "status", "exit_code", "message", "started_at", "ended_at", "log"], unique: [["run_id"]] },
+  etc_balances: { columns: ["player_id", "currency", "quantity", "ledger_id", "updated_at"], unique: [["player_id", "currency"]] },
+  etc_item_sales: { columns: ["item_id", "sold", "cap", "updated_at"], unique: [["item_id"]] },
+  etc_commissions: { columns: ["commission_id", "tx_id", "player_id", "slot", "rarity", "description", "status", "created_at", "updated_at"], unique: [["commission_id"], ["tx_id"]] },
+  etc_inbox: { columns: ["entry_id", "player_id", "item_id", "sender_kind", "sender_id", "message", "created_at", "claimed_at", "source_tx"], unique: [["entry_id"], ["source_tx"]] },
+  etc_gifts: { columns: ["tx_id", "from_player", "to_player", "item_id", "created_at"], unique: [["tx_id"]] },
+  etc_blocks: { columns: ["block_key", "player_id", "blocked_id", "active", "updated_at"], unique: [["block_key"]] },
+  etc_round_hosts: { columns: ["match_id", "player_id", "created_at"], unique: [["match_id"]] },
 }
 
 function matches(row: Row, f: Filter): boolean {

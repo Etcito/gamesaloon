@@ -174,6 +174,14 @@ The card pool, the pack rules (size, tiers, weights, guaranteed last slot, dupli
 `etc_settings` key `economy.catalog` (`{cards:[{id,rarity,token?}], packs:{<pack_type>:{kind:"random"|"fixed",...}}, rewards:{<id or prefix*>:{coins?,packs?}}}`).
 Prices and what a purchase contains are the rows of `etc_products` (`price` in minor units, or coins for provider `coins`; `grant_coins`, `grant_packs` `{"<pack_type>": n}`).
 
+The generic economy tables are declared too: `etc_balances` (`player_id`, `currency`, `quantity`, `ledger_id`, `updated_at`; unique `player_id` + `currency`; the projection of the extra currencies a game declares, built like `etc_packs`),
+`etc_item_sales` (`item_id`, `sold`, `cap`, `updated_at`; unique `item_id`; the sold counter of each capped item),
+`etc_commissions` (`commission_id`, `tx_id`, `player_id`, `slot`, `rarity`, `description`, `status`, `created_at`, `updated_at`; unique `commission_id`, unique `tx_id`),
+`etc_inbox` (`entry_id`, `player_id`, `item_id`, `sender_kind`, `sender_id`, `message`, `created_at`, `claimed_at`, `source_tx`; unique `entry_id`, unique `source_tx`),
+`etc_gifts` (`tx_id`, `from_player`, `to_player`, `item_id`, `created_at`; unique `tx_id`),
+`etc_blocks` (`block_key`, `player_id`, `blocked_id`, `active`, `updated_at`; unique `block_key`, where `block_key` is `<player>|<blocked>`; unblocking sets `active` false because the table API has no delete),
+`etc_round_hosts` (`match_id`, `player_id`, `created_at`; unique `match_id`). `etc_ledger` gains `edition_key` (unique; null never conflicts, so every existing ledger row and op is unaffected). The columns hold item ids, slot/rarity strings and counts only, never a game's words. The CRM template CRM-Customs/EtcitoGameServer is updated from this list outside this project.
+
 ### Idempotency
 Every mutation is committed by ONE ledger row with a unique `tx_id`. Client operations carry an `op` (1..64 chars of `A-Za-z0-9_:.-`) chosen by the
 client; the server namespaces it by player. The same `op` with the same parameters answers the original result with `applied: false`
