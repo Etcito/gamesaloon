@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Etcito
 // One EconomyService per game (= per mission): the state of the players, the coin shop, pack opening, rewards,
-// and the paid purchases (Wavedash consumables, Stripe Checkout). All durable state is in the mission's tables;
-// the service keeps no balance of its own.
+// the paid purchases (Wavedash consumables, Stripe Checkout), and the cosmetic economy of the catalog (shop, round
+// rewards, commissions, inbox, gifts). All durable state is in the mission's tables; the service keeps no balance
+// of its own.
 
 import { StoreError } from '../store/errors.ts'
 import type { Filter, Row, TableApi } from '../store/tables.ts'
@@ -16,6 +17,17 @@ import type { Rng } from './draw.ts'
 import { WavedashError } from './wavedash.ts'
 import type { ReceiptClaims, Wavedash } from './wavedash.ts'
 import type { StripeBridge } from './stripe.ts'
+import { createShop } from './shop.ts'
+import type { ShopBuyResult, ShopView } from './shop.ts'
+import { createRoundRewards } from './rounds.ts'
+import type { RoundReport } from './rounds.ts'
+import { createCommissions } from './commissions.ts'
+import type { Commission, CommissionResult } from './commissions.ts'
+import { createInbox } from './inbox.ts'
+import type { ClaimResult, InboxEntry } from './inbox.ts'
+import { createGifts } from './gifts.ts'
+import type { GiftResult } from './gifts.ts'
+import { FILTER_KEY, GIFT_KEY, parseFilterSettings, parseGiftSettings } from './gameconfig.ts'
 import type { BuyResult, OpenResult, OpResult, Product, ProductProvider, PurchaseResult, RewardResult } from './types.ts'
 
 export interface EconomyView {
@@ -23,6 +35,8 @@ export interface EconomyView {
   version: number
   packs: Array<{ pack_type: string; quantity: number }>
   cards: Record<string, number>
+  /** Currency balances; absent when the player has none (a game without currencies keeps the shape above). */
+  balances?: Record<string, number>
 }
 
 export interface ProductView {
@@ -67,6 +81,23 @@ export interface EconomyService {
   hasStripe(): boolean
   /** Signature check of a raw Stripe webhook through the bridge: the event, or null when the signature is invalid. */
   stripeVerify(rawBody: string, signature: string): Promise<Record<string, unknown> | null>
+  /** The cosmetic shop of the catalog with the copies left of capped items. */
+  shop(): Promise<ShopView>
+  /** Buys one shop item in one of its currencies. A replay of the op answers the stored result, applied:false. */
+  shopBuy(playerId: string, opId: string, item: string, currency: string): Promise<ShopBuyResult & { applied: boolean }>
+  /** A round reward reported by the match host; `player` is the Wavedash user id of the rewarded player. */
+  roundReward(reporterId: string, matchId: string, round: number, player: string, kind: string): Promise<RoundReport>
+  commission(playerId: string, opId: string, slot: string, rarity: string, description: string): Promise<CommissionResult>
+  /** The player's commissions, newest first. */
+  commissions(playerId: string): Promise<Commission[]>
+  /** The commissions of the next shop drop (not shipped), oldest first, without player ids. */
+  commissionQueue(): Promise<Commission[]>
+  inbox(playerId: string): Promise<InboxEntry[]>
+  claim(playerId: string, opId: string, id: string): Promise<ClaimResult>
+  /** Gives one owned item to the player of the Wavedash user id `to`, through their inbox. */
+  gift(playerId: string, opId: string, to: string, item: string, message: string): Promise<GiftResult>
+  /** Blocks (or unblocks) the gifts of the player of the Wavedash user id `other`. */
+  block(playerId: string, other: string, blocked: boolean): Promise<void>
   onChange(fn: (playerId: string) => void): void
   start(): void
   stop(): void
@@ -111,6 +142,21 @@ export function createEconomyService(deps: EconomyServiceDeps): EconomyService {
     cache.set(key, { at: now(), value })
     return value
   }
+
+  /** A JSON setting of etc_settings, parsed and cached. An invalid value is logged and fails the operation that needs it. */
+  function setting<T>(key: string, parse: (text: string | null) => T | null): () => Promise<T | null> {
+    return () => cached(key, async () => {
+      const row = await one('etc_settings', [eq('key', key)])
+      try { return parse(typeof row?.value === 'string' ? row.value : null) }
+      catch (e) { log('error', `[economy] ${game}: ${(e as Error).message}`); throw e }
+    })
+  }
+
+  const shop = createShop({ api, ledger, catalog: catalog.current, now })
+  const rounds = createRoundRewards({ api, ledger, store: deps.store, catalog: catalog.current, now })
+  const commissions = createCommissions({ api, ledger, catalog: catalog.current, filter: setting(FILTER_KEY, parseFilterSettings), now })
+  const inbox = createInbox({ api, ledger, catalog: catalog.current, now })
+  const gifts = createGifts({ api, ledger, inbox, store: deps.store, gifts: setting(GIFT_KEY, parseGiftSettings), now })
 
   async function findProduct(provider: ProductProvider, code: string, activeOnly = true): Promise<Product | null> {
     const row = await one('etc_products', [eq('provider', provider), eq('code', code)])
@@ -240,7 +286,10 @@ export function createEconomyService(deps: EconomyServiceDeps): EconomyService {
 
     async state(playerId) {
       const s = await ledger.state(playerId)
-      return { coins: s.coins, version: s.version, packs: Object.entries(s.packs).map(([pack_type, quantity]) => ({ pack_type, quantity })), cards: s.cards }
+      return {
+        coins: s.coins, version: s.version, packs: Object.entries(s.packs).map(([pack_type, quantity]) => ({ pack_type, quantity })), cards: s.cards,
+        ...(s.balances ? { balances: s.balances } : {}),
+      }
     },
 
     purchaseBlockedUntil: (playerId) => blockedUntil(playerId),
@@ -346,6 +395,50 @@ export function createEconomyService(deps: EconomyServiceDeps): EconomyService {
       if (!deps.stripe) throw new EconomyUnavailable('stripe')
       return deps.stripe.verify(rawBody, signature)
     },
+
+    shop: () => shop.view(),
+
+    async shopBuy(playerId, opId, item, currency) {
+      const r = await shop.buy(playerId, opId, item, currency)
+      if (r.applied) notify(playerId)
+      return r
+    },
+
+    async roundReward(reporterId, matchId, round, player, kind) {
+      const r = await rounds.report(reporterId, matchId, round, player, kind)
+      if (r.applied) notify((await deps.store.getOrCreateByIdentity({ provider: 'wavedash', external_id: player })).player.player_id)
+      return r
+    },
+
+    async commission(playerId, opId, slot, rarity, description) {
+      const r = await commissions.commission(playerId, opId, slot, rarity, description)
+      if (r.applied) notify(playerId)
+      return r
+    },
+
+    commissions: (playerId) => commissions.mine(playerId),
+    commissionQueue: () => commissions.queue(),
+    inbox: (playerId) => inbox.list(playerId),
+
+    async claim(playerId, opId, id) {
+      const r = await inbox.claim(playerId, opId, id)
+      if (r.applied) notify(playerId)
+      return r
+    },
+
+    async gift(playerId, opId, to, item, message) {
+      const r = await gifts.gift(playerId, opId, to, item, message)
+      if (r.applied) {
+        notify(playerId)
+        // The recipient is the one the gift module resolved, recorded on its etc_gifts row (keyed by the gift's tx id).
+        const row = await one('etc_gifts', [eq('tx_id', `c:${playerId}:${opId}`)])
+        if (typeof row?.to_player === 'string') notify(row.to_player)
+      }
+      return r
+    },
+
+    block: (playerId, other, blocked) => gifts.block(playerId, other, blocked),
+
     onChange(fn) { listeners.push(fn) },
     start() { void catalog.refresh(); catalog.start() },
     stop() { catalog.stop() },
