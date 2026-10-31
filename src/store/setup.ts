@@ -37,8 +37,20 @@ export async function openStores(cfg: StoreConfig, opts: {
   wavedash?: Wavedash
 } = {}): Promise<OpenedStores> {
   if (cfg.mode === 'memory') {
-    const store = createMemoryStore()
+    const memory = createMemoryStore()
     const api = createMemoryTableApi()
+    // The economy resolves a gift recipient through etc_identities (as with the HTTP store, which writes it),
+    // so the memory store mirrors every identity it creates into that table.
+    const store: typeof memory = {
+      ...memory,
+      async getOrCreateByIdentity(identity, init) {
+        const result = await memory.getOrCreateByIdentity(identity, init)
+        if (result.created) {
+          await api.insert("etc_identities", { ident_key: `${identity.provider}${identity.external_id}`, player_id: result.player.player_id })
+        }
+        return result
+      },
+    }
     let importedSettings: number | undefined
     if (cfg.importFile) {
       let text: string
