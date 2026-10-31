@@ -6,8 +6,14 @@ import { RELAY_CLIENT_TYPES, RELAY_SERVER_TYPES, RELAY_TYPE_FIELD } from '../rel
 import { ONLINE_CLIENT_TYPES, ONLINE_ERROR_CODES, ONLINE_SERVER_TYPES, isOnlineClientType, parseOnlineMessage } from '../online/messages.ts'
 import type { OnlineClientMessage } from '../online/messages.ts'
 
-export const ECONOMY_CLIENT_TYPES = ['eco_get', 'eco_products', 'eco_reward', 'eco_buy', 'eco_open', 'eco_wavedash', 'eco_stripe'] as const
-export const ECONOMY_SERVER_TYPES = ['eco_state', 'eco_products', 'eco_reward', 'eco_bought', 'eco_opened', 'eco_purchase', 'eco_checkout'] as const
+export const ECONOMY_CLIENT_TYPES = [
+  'eco_get', 'eco_products', 'eco_reward', 'eco_buy', 'eco_open', 'eco_wavedash', 'eco_stripe',
+  'eco_shop', 'eco_shop_buy', 'eco_round', 'eco_commission', 'eco_commissions', 'eco_queue', 'eco_inbox', 'eco_claim', 'eco_gift', 'eco_block',
+] as const
+export const ECONOMY_SERVER_TYPES = [
+  'eco_state', 'eco_products', 'eco_reward', 'eco_bought', 'eco_opened', 'eco_purchase', 'eco_checkout',
+  'eco_shop', 'eco_shop_bought', 'eco_round', 'eco_commissioned', 'eco_commissions', 'eco_queue', 'eco_inbox', 'eco_claimed', 'eco_gifted', 'eco_blocked',
+] as const
 export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', 'ladder', 'match_status', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
 export const MATCH_SERVER_TYPES = ['authed', 'match_queued', 'match_unqueued', 'match', 'result_ack', 'match_end', 'ladder', ...ECONOMY_SERVER_TYPES, ...ONLINE_SERVER_TYPES] as const
 export const MATCH_ERROR_CODES = [
@@ -17,6 +23,7 @@ export const MATCH_ERROR_CODES = [
   'store_unavailable', 'ranked_requires_account',
   'economy_unavailable', 'insufficient_funds', 'no_packs', 'tx_conflict', 'unknown_product', 'unknown_reward', 'unknown_pack',
   'purchase_refunded', 'purchases_blocked', 'bad_receipt', 'receipt_mismatch', 'not_production', 'bad_return_url', 'payment_unavailable',
+  'unknown_item', 'no_price', 'already_owned', 'sold_out', 'description_refused', 'already_claimed', 'not_owned', 'self_gift', 'blocked',
   ...ONLINE_ERROR_CODES,
 ] as const
 
@@ -48,6 +55,18 @@ export type MatchClientMessage =
   | { t: 'eco_open'; op: string; pack_type: string }
   | { t: 'eco_wavedash'; op?: string; receipt_jwt: string; user_jwt?: string }
   | { t: 'eco_stripe'; op?: string; product: string; return_url: string }
+  | { t: 'eco_shop'; op?: string }
+  | { t: 'eco_shop_buy'; op: string; item: string; currency: string }
+  /** A round reward reported by the match host; `player` is the Wavedash user id of the rewarded player. */
+  | { t: 'eco_round'; op?: string; match_id: string; round: number; player: string; kind: string }
+  | { t: 'eco_commission'; op: string; slot: string; rarity: string; description: string }
+  | { t: 'eco_commissions'; op?: string }
+  | { t: 'eco_queue'; op?: string }
+  | { t: 'eco_inbox'; op?: string }
+  | { t: 'eco_claim'; op: string; id: string }
+  /** `to` is the Wavedash user id of the recipient. */
+  | { t: 'eco_gift'; op: string; to: string; item: string; message?: string }
+  | { t: 'eco_block'; op?: string; player: string; blocked: boolean }
   | OnlineClientMessage
 
 export type MatchServerMessage =
@@ -145,6 +164,8 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
       return { t: 'ladder', page }
     }
     case 'eco_get': case 'eco_products': case 'eco_reward': case 'eco_buy': case 'eco_open': case 'eco_wavedash': case 'eco_stripe':
+    case 'eco_shop': case 'eco_shop_buy': case 'eco_round': case 'eco_commission': case 'eco_commissions': case 'eco_queue':
+    case 'eco_inbox': case 'eco_claim': case 'eco_gift': case 'eco_block':
       return parseEconomy(type, value)
     case 'save_list': case 'save_get': case 'save_put': case 'save_delete':
     case 'ach_list': case 'stats_get': case 'stat_report': case 'ach_ack':
@@ -172,6 +193,7 @@ export function parseMatchMessage(raw: string | Record<string, unknown>): ParseM
 
 const ID = /^[A-Za-z0-9_:.-]{1,96}$/
 const str = (v: unknown, max: number): v is string => typeof v === 'string' && v.length >= 1 && v.length <= max
+const isId = (v: unknown): v is string => typeof v === 'string' && ID.test(v)
 
 function parseEconomy(type: typeof ECONOMY_CLIENT_TYPES[number], v: Record<string, unknown>): MatchClientMessage | MatchParseError {
   const opField = v.op
@@ -205,6 +227,43 @@ function parseEconomy(type: typeof ECONOMY_CLIENT_TYPES[number], v: Record<strin
       if (!str(v.return_url, 400)) return { error: 'bad_message', message: 'eco_stripe.return_url must be 1..400 chars' }
       return { t: 'eco_stripe', ...withOp, product: v.product, return_url: v.return_url }
     }
+    case 'eco_shop': return { t: 'eco_shop', ...withOp }
+    case 'eco_shop_buy':
+      if (op === undefined) return bad('eco_shop_buy.op required')
+      if (!isId(v.item)) return bad('eco_shop_buy.item invalid')
+      if (!isId(v.currency)) return bad('eco_shop_buy.currency invalid')
+      return { t: 'eco_shop_buy', op, item: v.item, currency: v.currency }
+    case 'eco_round': {
+      if (!isId(v.match_id)) return bad('eco_round.match_id invalid')
+      const round = v.round
+      if (typeof round !== 'number' || !Number.isSafeInteger(round) || round < 0 || round > 1000) return bad('eco_round.round must be an integer 0..1000')
+      if (!isId(v.player)) return bad('eco_round.player invalid')
+      if (!isId(v.kind)) return bad('eco_round.kind invalid')
+      return { t: 'eco_round', ...withOp, match_id: v.match_id, round, player: v.player, kind: v.kind }
+    }
+    case 'eco_commission':
+      if (op === undefined) return bad('eco_commission.op required')
+      if (!isId(v.slot)) return bad('eco_commission.slot invalid')
+      if (!isId(v.rarity)) return bad('eco_commission.rarity invalid')
+      if (!str(v.description, 1000)) return bad('eco_commission.description must be 1..1000 chars')
+      return { t: 'eco_commission', op, slot: v.slot, rarity: v.rarity, description: v.description }
+    case 'eco_commissions': return { t: 'eco_commissions', ...withOp }
+    case 'eco_queue': return { t: 'eco_queue', ...withOp }
+    case 'eco_inbox': return { t: 'eco_inbox', ...withOp }
+    case 'eco_claim':
+      if (op === undefined) return bad('eco_claim.op required')
+      if (!isId(v.id)) return bad('eco_claim.id invalid')
+      return { t: 'eco_claim', op, id: v.id }
+    case 'eco_gift':
+      if (op === undefined) return bad('eco_gift.op required')
+      if (!isId(v.to)) return bad('eco_gift.to invalid')
+      if (!isId(v.item)) return bad('eco_gift.item invalid')
+      if (v.message !== undefined && !(typeof v.message === 'string' && v.message.length <= 280)) return bad('eco_gift.message must be 0..280 chars')
+      return { t: 'eco_gift', op, to: v.to, item: v.item, ...(v.message !== undefined ? { message: v.message as string } : {}) }
+    case 'eco_block':
+      if (!isId(v.player)) return bad('eco_block.player invalid')
+      if (typeof v.blocked !== 'boolean') return bad('eco_block.blocked must be a boolean')
+      return { t: 'eco_block', ...withOp, player: v.player, blocked: v.blocked }
   }
 }
 

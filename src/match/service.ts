@@ -34,6 +34,9 @@ export const RANKED_MIN_MS = 180000
 export const INACTIVITY_MS = 600000
 export const SHORT_WEIGHT = 0.5
 
+/** Economy messages whose missing entry or player answers `not_found`; the first ones answer `unknown_product`. */
+const ECO_NOT_FOUND: ReadonlySet<string> = new Set(['eco_claim', 'eco_gift', 'eco_block'])
+
 /** The ladder game when neither the router nor the auth message names one (the only Handshake ranked client). */
 const DEFAULT_LADDER_GAME = 'kekkai'
 
@@ -335,6 +338,39 @@ export class MatchService implements RelayExtension {
         const s = await eco.stripeCheckout(pid, m.product, m.return_url)
         return this.send(conn, { t: 'eco_checkout', ...echo, url: s.url, session_id: s.session_id })
       }
+      case 'eco_shop': return this.send(conn, { t: 'eco_shop', ...echo, ...(await eco.shop()) })
+      case 'eco_shop_buy': {
+        const r = await eco.shopBuy(pid, m.op, m.item, m.currency)
+        return this.send(conn, {
+          t: 'eco_shop_bought', ...echo, item: r.item, currency: r.currency, price: r.price, coins: r.coins, balances: r.balances, remaining: r.remaining, applied: r.applied,
+        })
+      }
+      case 'eco_round': {
+        const r = await eco.roundReward(pid, m.match_id, m.round, m.player, m.kind)
+        return this.send(conn, { t: 'eco_round', ...echo, match_id: r.match_id, round: r.round, player: r.player, kind: r.kind, granted: r.granted, applied: r.applied })
+      }
+      case 'eco_commission': {
+        const { applied, ...commission } = await eco.commission(pid, m.op, m.slot, m.rarity, m.description)
+        return this.send(conn, { t: 'eco_commissioned', ...echo, commission, applied })
+      }
+      case 'eco_commissions': return this.send(conn, { t: 'eco_commissions', ...echo, items: await eco.commissions(pid) })
+      case 'eco_queue': return this.send(conn, { t: 'eco_queue', ...echo, items: await eco.commissionQueue() })
+      case 'eco_inbox': {
+        const entries = await eco.inbox(pid)
+        return this.send(conn, { t: 'eco_inbox', ...echo, entries, unread: entries.filter((e) => !e.claimed).length })
+      }
+      case 'eco_claim': {
+        const r = await eco.claim(pid, m.op, m.id)
+        return this.send(conn, { t: 'eco_claimed', ...echo, id: r.id, item: r.item, applied: r.applied })
+      }
+      case 'eco_gift': {
+        const r = await eco.gift(pid, m.op, m.to, m.item, m.message ?? '')
+        return this.send(conn, { t: 'eco_gifted', ...echo, to: r.to, item: r.item, applied: r.applied })
+      }
+      case 'eco_block': {
+        await eco.block(pid, m.player, m.blocked)
+        return this.send(conn, { t: 'eco_blocked', ...echo, player: m.player, blocked: m.blocked })
+      }
     }
   }
 
@@ -436,7 +472,8 @@ export class MatchService implements RelayExtension {
   private economyError(conn: string, m: { t: string; op?: string }, err: unknown): void {
     let code = 'store_unavailable'
     if (err instanceof StoreError) {
-      code = err.code === 'bad_argument' ? (err.message === 'bad_return_url' ? 'bad_return_url' : 'bad_message') : err.code === 'not_found' ? 'unknown_product' : err.code
+      code = err.code === 'bad_argument' ? (err.message === 'bad_return_url' ? 'bad_return_url' : 'bad_message')
+        : err.code === 'not_found' && !ECO_NOT_FOUND.has(m.t) ? 'unknown_product' : err.code
     } else if (err instanceof WavedashError) {
       code = err.code === 'not_production' ? 'not_production' : err.code === 'receipt_mismatch' ? 'receipt_mismatch' : err.code === 'fulfill_failed' ? 'store_unavailable' : 'bad_receipt'
     } else if (err instanceof EconomyUnavailable) {
