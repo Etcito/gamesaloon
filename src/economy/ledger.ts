@@ -6,7 +6,7 @@
 //   * etc_ledger (unique tx_id) is the journal AND the idempotency guard. An operation is decided (validated, cards
 //     drawn, deltas computed) and then committed by inserting its ledger row; a replay finds the row and returns
 //     the stored result (`applied: false`), a replay with other parameters fails `tx_conflict`.
-//   * etc_wallets / etc_packs / etc_cards are the PROJECTION of the journal. Every row remembers the id of the last
+//   * etc_wallets / etc_packs / etc_cards / etc_balances are the PROJECTION of the journal. Every row remembers the id of the last
 //     ledger row it applied (`last_ledger_id` / `ledger_id`), so applying a ledger row is idempotent. Every
 //     operation first applies the player's not-yet-applied ledger rows (catch-up): a crash between the commit
 //     and the projection is repaired by the next operation or read of that player.
@@ -20,12 +20,22 @@ import { cryptoRng, drawRandom, fixedCards, shopPool } from './draw.ts'
 import type { Rng } from './draw.ts'
 import type { BuyResult, Catalog, DrawnCard, EconomyState, Fx, OpenResult, OpResult, Product, RewardResult } from './types.ts'
 
-export const ECO_OPS = ['eco.reward', 'eco.buy', 'eco.open', 'eco.grant', 'eco.reverse'] as const
+export const ECO_OPS = ['eco.reward', 'eco.buy', 'eco.open', 'eco.grant', 'eco.reverse', 'eco.shop', 'eco.round', 'eco.commission', 'eco.gift', 'eco.claim'] as const
 const PAGE = 500
 const CATCHUP_PAGE = 50
-const T = { wallets: 'etc_wallets', packs: 'etc_packs', cards: 'etc_cards', ledger: 'etc_ledger' }
+const T = { wallets: 'etc_wallets', packs: 'etc_packs', cards: 'etc_cards', balances: 'etc_balances', ledger: 'etc_ledger' }
+
+interface Built<R> { fx: Fx; result: R }
 
 export interface EconomyLedger {
+  /** Commits one fact and projects it. Build may throw to refuse; it runs again with fresh state on an
+   *  edition conflict (at most 64 attempts). Currency affordability is the builder's responsibility.
+   *  editionKey runs after build with the same state, so both can use the selected edition. */
+  commit<R extends object>(
+    playerId: string, txId: string, op: (typeof ECO_OPS)[number], params: unknown,
+    build: (state: EconomyState) => Built<R> | Promise<Built<R>>,
+    opts?: { editionKey?: (state: EconomyState) => string | null },
+  ): Promise<OpResult<R>>
   state(playerId: string): Promise<EconomyState>
   reward(playerId: string, rewardId: string): Promise<OpResult<RewardResult>>
   buyWithCoins(playerId: string, opId: string, product: Product, qty: number): Promise<OpResult<BuyResult>>
@@ -96,7 +106,10 @@ export function createEconomyLedger(api: TableApi, opts: {
   function fxOf(row: Row): Fx {
     try {
       const parsed = JSON.parse(row.result_json as string) as { fx?: Partial<Fx> }
-      return { coins: num(parsed.fx?.coins), packs: parsed.fx?.packs ?? {}, cards: parsed.fx?.cards ?? {} }
+      return {
+        coins: num(parsed.fx?.coins), packs: parsed.fx?.packs ?? {}, cards: parsed.fx?.cards ?? {},
+        ...(parsed.fx?.currencies === undefined ? {} : { currencies: parsed.fx.currencies }),
+      }
     } catch {
       return emptyFx()
     }
@@ -108,6 +121,7 @@ export function createEconomyLedger(api: TableApi, opts: {
     const fx = fxOf(ledgerRow)
     for (const [type, d] of Object.entries(fx.packs)) await bump(T.packs, { player_id: playerId, pack_type: type }, d, id, {})
     for (const [card, d] of Object.entries(fx.cards)) await bump(T.cards, { player_id: playerId, card_id: card }, d, id, { first_at: now() })
+    for (const [currency, d] of Object.entries(fx.currencies ?? {})) await bump(T.balances, { player_id: playerId, currency }, d, id, {})
     const patch = { coins: num(wallet.coins) + fx.coins, version: num(wallet.version) + 1, last_ledger_id: id, updated_at: now() }
     await api.update(T.wallets, wallet.id as number, patch)
     return { ...wallet, ...patch }
@@ -139,15 +153,17 @@ export function createEconomyLedger(api: TableApi, opts: {
     for (const r of await all(T.packs, [eq('player_id', playerId)])) if (num(r.quantity) > 0) packs[r.pack_type as string] = num(r.quantity)
     const cards: Record<string, number> = {}
     for (const r of await all(T.cards, [eq('player_id', playerId)])) if (num(r.quantity) > 0) cards[r.card_id as string] = num(r.quantity)
-    return { coins: num(wallet.coins), version: num(wallet.version), packs, cards }
+    const rows = await all(T.balances, [eq('player_id', playerId)])
+    const state: EconomyState = { coins: num(wallet.coins), version: num(wallet.version), packs, cards }
+    if (rows.length) state.balances = Object.fromEntries(rows.map(r => [r.currency as string, num(r.quantity)]))
+    return state
   }
 
-  interface Built<R> { fx: Fx; result: R }
-
   /** The one write path: lock, catch up, replay-or-decide, commit the ledger row, project it. */
-  async function run<R extends object>(
+  async function commit<R extends object>(
     playerId: string, txId: string, op: (typeof ECO_OPS)[number], params: unknown,
     build: (state: EconomyState) => Built<R> | Promise<Built<R>>,
+    commitOpts?: { editionKey?: (state: EconomyState) => string | null },
   ): Promise<OpResult<R>> {
     arg(playerId, 'player id'); arg(txId, 'transaction id', 200)
     const paramText = JSON.stringify(params)
@@ -165,20 +181,27 @@ export function createEconomyLedger(api: TableApi, opts: {
       }
       const before = await replay()
       if (before) return before
-      const state = await loadState(playerId, wallet)
-      const { fx, result } = await build(state)
-      const packDelta = Object.values(fx.packs).reduce((a, b) => a + b, 0)
-      const committed = await api.insert(T.ledger, {
-        tx_id: txId, player_id: playerId, op, game: '', coin_delta: fx.coins, pack_delta: packDelta, created_at: now(),
-        params: paramText, result_json: JSON.stringify({ result, fx }),
-      })
-      if (committed === 'conflict') {
-        const raced = await replay()
-        if (raced) return raced
-        throw new StoreError('tx_conflict', 'Transaction id already used')
+      for (let attempt = 0; attempt < 64; attempt++) {
+        // Another instance may have committed and projected while our insert conflicted.
+        if (attempt > 0) wallet = await catchUp(playerId, await ensureWallet(playerId))
+        const state = await loadState(playerId, wallet)
+        const { fx, result } = await build(state)
+        const editionKey = commitOpts?.editionKey?.(state)
+        const packDelta = Object.values(fx.packs).reduce((a, b) => a + b, 0)
+        const committed = await api.insert(T.ledger, {
+          tx_id: txId, player_id: playerId, op, game: '', coin_delta: fx.coins, pack_delta: packDelta, created_at: now(),
+          params: paramText, result_json: JSON.stringify({ result, fx }),
+          ...(editionKey == null ? {} : { edition_key: editionKey }),
+        })
+        if (committed === 'conflict') {
+          const raced = await replay()
+          if (raced) return raced
+          continue
+        }
+        wallet = await catchUp(playerId, wallet)
+        return { result, applied: true }
       }
-      wallet = await catchUp(playerId, wallet)
-      return { result, applied: true }
+      throw new StoreError('tx_conflict', 'Transaction could not be committed after 64 attempts')
     })
   }
 
@@ -189,6 +212,7 @@ export function createEconomyLedger(api: TableApi, opts: {
   }
 
   return {
+    commit,
     async state(playerId) {
       arg(playerId, 'player id')
       return locked([`p:${playerId}`], async () => loadState(playerId, await catchUp(playerId, await ensureWallet(playerId))))
@@ -199,7 +223,7 @@ export function createEconomyLedger(api: TableApi, opts: {
       const def = findReward(opts.catalog(), rewardId)
       if (!def) throw new StoreError('unknown_reward', 'Unknown reward')
       // One grant per player and reward id, whatever the client op id: claiming it again changes nothing.
-      return run(playerId, `rw:${playerId}:${rewardId}`, 'eco.reward', [rewardId], state => ({
+      return commit(playerId, `rw:${playerId}:${rewardId}`, 'eco.reward', [rewardId], state => ({
         fx: { coins: def.coins, packs: { ...def.packs }, cards: {} },
         result: { reward_id: rewardId, granted: def, coins: state.coins + def.coins },
       }))
@@ -209,7 +233,7 @@ export function createEconomyLedger(api: TableApi, opts: {
       arg(opId, 'operation id', 64)
       if (product.provider !== 'coins') throw new StoreError('unknown_product', 'Not a coin product')
       if (!Number.isSafeInteger(qty) || qty < 1 || qty > 100) throw new StoreError('bad_argument', 'Invalid quantity')
-      return run(playerId, `c:${playerId}:${opId}`, 'eco.buy', [product.code, qty], state => {
+      return commit(playerId, `c:${playerId}:${opId}`, 'eco.buy', [product.code, qty], state => {
         const cost = product.price * qty
         if (cost > state.coins) throw new StoreError('insufficient_funds', 'Insufficient funds')
         const packs = plus({}, product.grant_packs, qty)
@@ -226,7 +250,7 @@ export function createEconomyLedger(api: TableApi, opts: {
       const catalog = opts.catalog()
       const def = catalog.packs[packType]
       if (!def) throw new StoreError('unknown_pack', 'Unknown pack type')
-      return run(playerId, `c:${playerId}:${opId}`, 'eco.open', [packType], state => {
+      return commit(playerId, `c:${playerId}:${opId}`, 'eco.open', [packType], state => {
         if ((state.packs[packType] ?? 0) < 1) throw new StoreError('no_packs', 'No unopened pack of this type')
         const owned = new Set(Object.keys(state.cards))
         const pool = shopPool(catalog.cards)
@@ -246,7 +270,7 @@ export function createEconomyLedger(api: TableApi, opts: {
     },
 
     async grantProduct(playerId, txId, product) {
-      return run(playerId, txId, 'eco.grant', [product.provider, product.code], () => ({
+      return commit(playerId, txId, 'eco.grant', [product.provider, product.code], () => ({
         fx: { coins: product.grant_coins, packs: { ...product.grant_packs }, cards: {} },
         result: { coins: product.grant_coins, packs: { ...product.grant_packs } },
       }))
@@ -254,7 +278,7 @@ export function createEconomyLedger(api: TableApi, opts: {
 
     async reverse(playerId, txId, originalTxId) {
       arg(originalTxId, 'original transaction id', 200)
-      return run(playerId, txId, 'eco.reverse', [originalTxId], async state => {
+      return commit(playerId, txId, 'eco.reverse', [originalTxId], async state => {
         const original = await one(T.ledger, [eq('tx_id', originalTxId)])
         const mine = original && original.player_id === playerId
         const fx = mine ? fxOf(original) : emptyFx()

@@ -82,11 +82,12 @@ export interface Catalog {
 
 export const EMPTY_CATALOG: Catalog = { cards: [], packs: {}, rewards: {} }
 
-/** Net change of one operation on a player's state. Cards are never removed (a refund keeps what was opened). */
+/** Net change of one operation on a player's state. */
 export interface Fx {
   coins: number
   packs: Record<string, number>
   cards: Record<string, number>
+  currencies?: Record<string, number>
 }
 
 export interface DrawnCard { id: string; rarity: string; is_new: boolean; duplicate: boolean }
@@ -96,6 +97,7 @@ export interface EconomyState {
   version: number
   packs: Record<string, number>
   cards: Record<string, number>
+  balances?: Record<string, number>
 }
 
 export interface OpResult<R> { result: R; applied: boolean }
