@@ -6,6 +6,7 @@
 import type { Row, TableApi } from '../store/tables.ts'
 import { EMPTY_CATALOG } from './types.ts'
 import type { CardDef, Catalog, PackDef, Product, ProductProvider, RewardDef } from './types.ts'
+import { parseCurrencies, parseRoundRewards, parseShop } from './shopcatalog.ts'
 
 export const CATALOG_KEY = 'economy.catalog'
 export const CATALOG_REFRESH_MS = 60_000
@@ -114,7 +115,11 @@ export function parseCatalog(text: string | null | undefined): Catalog {
       rewards[id] = { coins, packs: rp }
     }
   }
-  return { cards, packs, rewards }
+  const catalog: Catalog = { cards, packs, rewards }
+  if (raw.currencies !== undefined) catalog.currencies = parseCurrencies(raw.currencies)
+  if (raw.shop !== undefined) catalog.shop = parseShop(raw.shop, catalog.currencies ?? [], seen)
+  if (raw.round_rewards !== undefined) catalog.round_rewards = parseRoundRewards(raw.round_rewards, catalog.currencies ?? [])
+  return catalog
 }
 
 /** Reward definition for an id: exact match first, then the longest `prefix*` entry. */

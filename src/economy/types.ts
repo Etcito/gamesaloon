@@ -44,11 +44,40 @@ export interface PackDef {
 
 export interface RewardDef { coins: number; packs: Record<string, number> }
 
+/** One cosmetic of the optional shop. Prices are per currency; `edition_cap` null means uncapped. */
+export interface ShopItem {
+  id: string
+  name: string
+  slot: string
+  rarity: string
+  asset: string
+  price: Record<string, number>
+  edition_cap: number | null
+}
+
+export interface ShopDef {
+  drop: string
+  /** Slot and rarity names are declared by the catalog, never hardcoded. */
+  slots: string[]
+  /** rarity -> its reference prices (an item pricing the same currency must match). */
+  rarities: Record<string, { price: Record<string, number> }>
+  items: ShopItem[]
+  /** Currency a custom commission is paid in; null when commissions are off. */
+  commission: { currency: string } | null
+}
+
+export interface RoundReward { coins: number; currencies: Record<string, number> }
+
 export interface Catalog {
   cards: CardDef[]
   packs: Record<string, PackDef>
   /** reward id (exact, or prefix ending with `*`) -> what it grants (once per player and id). */
   rewards: Record<string, RewardDef>
+  /** Extra currency names declared by the game (never 'coins'). */
+  currencies?: string[]
+  shop?: ShopDef
+  /** round kind -> what finishing a round grants. */
+  round_rewards?: Record<string, RoundReward>
 }
 
 export const EMPTY_CATALOG: Catalog = { cards: [], packs: {}, rewards: {} }
