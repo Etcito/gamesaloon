@@ -37,6 +37,8 @@ An invalid value (a non-numeric `PORT`, an unknown `LOG_LEVEL`) stops the proces
 | `ETCITO_GAME_KEYS_FILE` | unset | Path of a file with the same JSON; turns on multi-creator mode and is re-read every 30 s. Replaces `ETCITO_GAME_KEYS` (see [multi-game.md](multi-game.md)) |
 | `ETCITO_CREATOR_MAX_ROOMS` | `10` | Multi-creator mode: room ceiling of a creator game (positive integer) |
 | `ETCITO_CREATOR_STORAGE_MAX_BYTES` | `52428800` | Multi-creator mode: saves plus content quota ceiling of a creator game (positive integer) |
+| `ECONOMY_IMPORT_FILE` | unset | Memory only: path of an economy file (`{catalog, products, settings?}`, see [economy.md](economy.md)) imported into the in-memory tenant at start-up. Refused with `PLAYER_STORE=http` |
+| `WAVEDASH_JWKS_URL` | unset | Memory only: http(s) URL of the Wavedash JWKS that verifies user JWTs, so local tests can sign a Wavedash player in. Refused with `PLAYER_STORE=http` |
 
 The `ETCITO_` prefix is historical: these variables configure the remote table service client. Configuration errors name the variable and never print a key. When `PLAYER_STORE=http` the start-up banner lists the configured game names.
 

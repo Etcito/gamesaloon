@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs'
 
 export type StoreConfig =
-  | { mode: 'memory' }
+  | { mode: 'memory'; importFile?: string; jwksUrl?: string }
   | { mode: 'http'; baseUrl: string; games: Record<string, string>; keyFile?: string }
 
 function fail(name: string, why: string): never {
@@ -15,8 +15,22 @@ function fail(name: string, why: string): never {
 
 export function loadStoreConfig(env: Record<string, string | undefined>): StoreConfig {
   const mode = (env.PLAYER_STORE ?? 'memory').trim()
-  if (mode === 'memory') return { mode }
+  if (mode === 'memory') {
+    const importFile = env.ECONOMY_IMPORT_FILE?.trim()
+    const rawJwks = (env.WAVEDASH_JWKS_URL ?? '').trim()
+    let jwksUrl: string | undefined
+    if (rawJwks !== '') {
+      let parsed: URL
+      try { parsed = new URL(rawJwks) } catch { fail('WAVEDASH_JWKS_URL', 'not a valid URL') }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') fail('WAVEDASH_JWKS_URL', 'must be http(s)')
+      jwksUrl = rawJwks
+    }
+    return { mode, ...(importFile ? { importFile } : {}), ...(jwksUrl ? { jwksUrl } : {}) }
+  }
   if (mode !== 'http') fail('PLAYER_STORE', 'must be "http" or "memory"')
+  // The economy import and the test key set belong to the in-memory store only: production never points identity elsewhere.
+  if ((env.ECONOMY_IMPORT_FILE ?? '').trim() !== '') fail('ECONOMY_IMPORT_FILE', 'only allowed with PLAYER_STORE=memory')
+  if ((env.WAVEDASH_JWKS_URL ?? '').trim() !== '') fail('WAVEDASH_JWKS_URL', 'only allowed with PLAYER_STORE=memory')
 
   const rawUrl = (env.ETCITO_URL ?? '').trim()
   if (rawUrl === '') fail('ETCITO_URL', 'required when PLAYER_STORE=http')

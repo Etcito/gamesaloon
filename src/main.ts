@@ -19,10 +19,13 @@ async function main(): Promise<void> {
   const storeCfg = loadStoreConfig(process.env) // throws a clear [config] error, never printing a key
   const log = defaultDeps(cfg).log
   console.log(`owner games: ${ownerGames().join(', ') || '(none)'}`)
-  const wavedash = createWavedash()
+  const wavedash = createWavedash(storeCfg.mode === 'memory' && storeCfg.jwksUrl ? { jwksUrl: storeCfg.jwksUrl } : {})
   const stores = await openStores(storeCfg, { log, wavedash })
   if (storeCfg.mode === 'http') console.log(`player store: http, games: ${Object.keys(storeCfg.games).join(', ')}`)
-  else console.log('player store: memory')
+  else {
+    console.log('player store: memory')
+    if (stores.importedSettings !== undefined) console.log(`economy import: ${stores.importedSettings} settings`)
+  }
   const hs = createHandshake({
     config: cfg,
     store: stores,

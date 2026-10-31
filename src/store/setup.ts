@@ -11,12 +11,18 @@ import { createCrmTableApi, createMemoryTableApi } from './tables.ts'
 import { createSettingsReader } from './settings.ts'
 import type { StoreConfig } from './config.ts'
 import { createEconomyService } from '../economy/service.ts'
+import { importGameConfig } from '../economy/import.ts'
 import { createStripeBridge } from '../economy/stripe.ts'
 import type { Wavedash } from '../economy/wavedash.ts'
 import { createOnline } from '../online/index.ts'
 import { isLegacyGame } from './legacy.ts'
 
-export type OpenedStores = GameRouter & { backends(): GameBackend[]; close(): void }
+export type OpenedStores = GameRouter & {
+  backends(): GameBackend[]
+  close(): void
+  /** Memory mode: how many etc_settings rows the ECONOMY_IMPORT_FILE carried; absent when nothing was imported. */
+  importedSettings?: number
+}
 
 /** Default period of the ETCITO_GAME_KEYS_FILE re-read. */
 export const REGISTRY_REFRESH_MS = 30_000
@@ -33,10 +39,31 @@ export async function openStores(cfg: StoreConfig, opts: {
   if (cfg.mode === 'memory') {
     const store = createMemoryStore()
     const api = createMemoryTableApi()
+    let importedSettings: number | undefined
+    if (cfg.importFile) {
+      let text: string
+      try { text = await readFile(cfg.importFile, 'utf8') } catch { throw new Error('[config] ECONOMY_IMPORT_FILE: unreadable') }
+      // The import checks the mission it writes into: the memory store is the game 'memory'.
+      await api.insert('etc_game', {
+        code: 'memory', name: 'Memory', repo_url: '', repo_branch: 'main', handshake_game: 'memory',
+        elo_start: 2500, elo_k_floor: 32, placement_games: 5, queues: '["quick"]',
+      })
+      try {
+        const result = await importGameConfig(api, text, { game: 'memory' })
+        importedSettings = result.settings.inserted + result.settings.updated + result.settings.unchanged
+      } catch (e) {
+        throw new Error(`[config] ECONOMY_IMPORT_FILE: ${(e as Error).message}`)
+      }
+    }
     const economy = createEconomyService({ game: 'memory', api, store, wavedash: opts.wavedash, log: opts.log })
     economy.start()
     const router = singleStoreRouter(store, economy, createOnline(api, { log: opts.log }), createSettingsReader(api))
-    return { ...router, backends: () => [router.resolve(undefined)!], close() { economy.stop() } }
+    return {
+      ...router,
+      backends: () => [router.resolve(undefined)!],
+      close() { economy.stop() },
+      ...(importedSettings !== undefined ? { importedSettings } : {}),
+    }
   }
   const multiCreator = cfg.keyFile !== undefined
   const makeRouter = (games: Record<string, string>): Promise<GameRouterHandle> => {
