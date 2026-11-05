@@ -106,9 +106,9 @@ function setup(waitMs = 60_000, games?: ReadonlyMap<string, number>) {
   const hub = new RelayHub(deps, undefined, games ? { games } : undefined)
   hub.use(lobby)
   lobby.attach(hub)
-  const add = () => {
+  const add = (origin?: string) => {
     const conn = new FakeConn()
-    return { conn, id: hub.connect(conn, '/') }
+    return { conn, id: hub.connect(conn, '/', origin) }
   }
   const say = (c: { id: string }, m: Record<string, unknown>) => hub.message(c.id, JSON.stringify(m))
   // `enter` asks the legacy question (choice: true) so the lobby_choice / lobby_pick tests keep covering it;
@@ -446,4 +446,20 @@ test('presence: dropped outside a lobby and in a round without counting invalid;
   assert.equal(parseLobbyMessage({ t: 'lobby_presence', a: { s: 'x'.repeat(300) } }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_presence', a: [1, 2] }), null)
   assert.equal(lobbyClaims('{"t":"lobby_presence","a":{}}'), true)
+})
+
+test('dev: a page on localhost gets its own lobby with a 10 s wait; public players keep theirs and never meet it', () => {
+  const s = setup(60_000)
+  const local = s.add('http://localhost:5191'), other = s.add('http://127.0.0.1:5191'), pub = s.add('https://wavedash.com')
+  s.enterAuto(local, 'A')
+  s.enterAuto(pub, 'P')
+  s.enterAuto(other, 'B')
+  assert.equal(local.conn.last('lobby_state')!.waitMs, 10_000)
+  assert.equal(pub.conn.last('lobby_state')!.waitMs, 60_000)
+  assert.equal((local.conn.last('lobby_state')!.players as unknown[]).length, 2)
+  assert.equal((pub.conn.last('lobby_state')!.players as unknown[]).length, 1)
+  s.clock.t += 10_000
+  s.hub.tick(s.clock.t)
+  assert.equal(local.conn.last('matched')!.players, 2)
+  assert.equal(pub.conn.last('matched'), undefined)
 })

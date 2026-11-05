@@ -6,6 +6,8 @@
 // question stays behind lobby_enter choice:true). Spectators are never seated, so they never become rollback peers.
 
 export const DEFAULT_LOBBY_WAIT_MS = 60_000
+/** The wait of a lobby whose players run a local build (format.dev): time to open a second browser, no longer. */
+export const DEV_LOBBY_WAIT_MS = 10_000
 export const DEFAULT_LOBBY_MIN_PLAYERS = 1
 export const MAX_LOBBY_SEATS = 4
 
@@ -23,7 +25,7 @@ export interface LobbyRules {
  * A lobby format: lobbies of one format are offered to each other's arrivals, never across formats. zones: the round
  * is a relay zone room (binary zone traffic, the game's RELAY_GAMES cap) instead of a legacy act room.
  */
-export interface LobbyFormat { game: string; seats: number; cadence: boolean; zones?: boolean }
+export interface LobbyFormat { game: string; seats: number; cadence: boolean; zones?: boolean; dev?: boolean }
 
 export interface Lobby {
   id: string
@@ -89,7 +91,7 @@ export function loadLobbyRules(env: Record<string, string | undefined>): LobbyRu
 }
 
 export function formatKey(f: LobbyFormat): string {
-  return `${f.game}|${f.seats}|${f.cadence ? 1 : 0}${f.zones ? '|z' : ''}`
+  return `${f.game}|${f.seats}|${f.cadence ? 1 : 0}${f.zones ? '|z' : ''}${f.dev ? '|dev' : ''}`
 }
 
 export function summarize(lobby: Lobby, now: number): LobbySummary {
@@ -143,12 +145,17 @@ export class LobbyBook {
         || this.lobbies.get(a.id)!.openedAt - this.lobbies.get(b.id)!.openedAt)
   }
 
+  /** The wait of a lobby of this format: the rules' wait, DEV_LOBBY_WAIT_MS for local builds. */
+  waitOf(format: LobbyFormat): number {
+    return format.dev ? Math.min(DEV_LOBBY_WAIT_MS, this.rules.waitMs) : this.rules.waitMs
+  }
+
   /** Opens an empty lobby seated with `conn`; its wait starts now. */
   open(conn: string, payload: unknown, format: LobbyFormat, now: number): Lobby {
     this.leave(conn)
     const lobby: Lobby = {
       id: `L${++this.seq}`, format, phase: 'waiting', openedAt: now,
-      startsAt: now + this.rules.waitMs, members: [{ conn, payload }],
+      startsAt: now + this.waitOf(format), members: [{ conn, payload }],
       spectators: new Set(), session: null, seed: null,
       keys: new Map([[conn, 0]]), nextKey: 1, spectatorPayloads: new Map(),
     }

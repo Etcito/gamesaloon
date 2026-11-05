@@ -46,6 +46,9 @@ export class LobbyService implements RelayExtension {
     if (msg.t === 'lobby_enter') {
       if (msg.zones && !this.hub?.zoneGame(msg.game)) return this.error(conn, 'unknown game')
       const format: LobbyFormat = msg.zones ? { game: msg.game, seats: msg.seats, cadence: msg.cadence, zones: true } : { game: msg.game, seats: msg.seats, cadence: msg.cadence }
+      // A local build (page on localhost) gets lobbies of its own with a short wait: two local browsers meet in
+      // seconds, and public players never wait less or meet a developer's build.
+      if (this.hub?.localDev(conn)) format.dev = true
       this.leave(conn, now)
       const lobbies = this.book.choices(format, now)
       if (!lobbies.length) return this.open(conn, format, msg.payload, now)
@@ -174,7 +177,7 @@ export class LobbyService implements RelayExtension {
       role: seat >= 0 ? 'player' : 'spectator', seat,
       players: lobby.members.map((m) => m.payload), seats: lobby.format.seats,
       startsInMs: lobby.phase === 'waiting' ? Math.max(0, lobby.startsAt - now) : 0,
-      waitMs: this.waitMs,
+      waitMs: this.book.waitOf(lobby.format),
       you: lobby.keys.get(conn) ?? -1, members: roster(lobby),
     })
   }

@@ -14,7 +14,7 @@ export function relayEndpoint(hub: RelayHub): Endpoint {
     maxPayload: MAX_EXT_BYTES,
     heartbeatMs: HEARTBEAT_MS,
     open(conn, info) {
-      const id = hub.connect(conn, info.url)
+      const id = hub.connect(conn, info.url, info.headers.origin)
       return {
         id,
         message: (frame) => hub.message(id, frame),
