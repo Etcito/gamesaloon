@@ -6,6 +6,7 @@ import { LobbyBook, loadLobbyRules } from '../src/lobby/lobby.ts'
 import { lobbyClaims, parseLobbyMessage } from '../src/lobby/messages.ts'
 import { LobbyService } from '../src/lobby/service.ts'
 import { RelayHub } from '../src/relay/hub.ts'
+import { BIN_IN_HEADER, BIN_KIND } from '../src/relay/binary.ts'
 
 const F = { game: 'royal-fiesta', seats: 4, cadence: true }
 
@@ -69,9 +70,9 @@ test('rules from env: defaults, values, refusals', () => {
 
 test('messages: parse and claims', () => {
   assert.deepEqual(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, payload: { n: 1 } }),
-    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: { n: 1 }, choice: false, spectate: false })
+    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: { n: 1 }, choice: false, spectate: false, zones: false })
   assert.deepEqual(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, choice: true, spectate: true }),
-    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: null, choice: true, spectate: true })
+    { t: 'lobby_enter', game: 'g', seats: 4, cadence: false, payload: null, choice: true, spectate: true, zones: false })
   assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 4, choice: 'yes' }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 5 }), null)
   assert.equal(parseLobbyMessage({ t: 'lobby_enter', game: 'g', seats: 2, payload: { s: 'x'.repeat(600) } }), null)
@@ -87,19 +88,22 @@ test('messages: parse and claims', () => {
 
 class FakeConn {
   sent: Record<string, unknown>[] = []
+  binaries: Uint8Array[] = []
+  closes = 0
   send(text: string): void { this.sent.push(JSON.parse(text)) }
-  close(): void {}
+  sendBinary(frame: Uint8Array): void { this.binaries.push(frame) }
+  close(): void { this.closes++ }
   last(t: string): Record<string, unknown> | undefined { return this.sent.filter((m) => m.t === t).at(-1) }
   types(): unknown[] { return this.sent.map((m) => m.t) }
 }
 
-function setup(waitMs = 60_000) {
+function setup(waitMs = 60_000, games?: ReadonlyMap<string, number>) {
   const clock = { t: 1_000_000 }
   let seed = 7
   const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
   const deps = { now: () => clock.t, random, log: () => {} }
   const lobby = new LobbyService(deps, { waitMs })
-  const hub = new RelayHub(deps)
+  const hub = new RelayHub(deps, undefined, games ? { games } : undefined)
   hub.use(lobby)
   lobby.attach(hub)
   const add = () => {
@@ -114,8 +118,49 @@ function setup(waitMs = 60_000) {
   const enter = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, { choice: true })
   const enterAuto = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, {})
   const enterSpectate = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, { spectate: true })
-  return { hub, clock, add, say, enter, enterAuto, enterSpectate }
+  const enterZones = (c: { id: string }, name: string, seats = 4) => send(c, name, seats, { zones: true })
+  return { hub, clock, add, say, enter, enterAuto, enterSpectate, enterZones }
 }
+
+function binaryFrame(): Uint8Array {
+  const frame = new Uint8Array(BIN_IN_HEADER + 2)
+  frame[0] = BIN_KIND
+  frame.set([7, 9], BIN_IN_HEADER)
+  return frame
+}
+
+test('zones: a zones lobby starts a zone room with whoever joined, a lone player too, and never mixes with legacy lobbies', () => {
+  const s = setup(1000, new Map([['royal-fiesta', 64]]))
+  const a = s.add(), b = s.add(), legacy = s.add()
+  s.enterZones(a, 'A')
+  s.enterZones(b, 'B')
+  s.enterAuto(legacy, 'L')
+  assert.equal((a.conn.last('lobby_state')!.players as unknown[]).length, 2)
+  assert.equal((legacy.conn.last('lobby_state')!.players as unknown[]).length, 1)
+  s.clock.t += 1000
+  s.hub.tick(s.clock.t)
+  assert.equal(a.conn.last('matched')!.players, 2)
+  s.hub.binary(a.id, binaryFrame())
+  assert.equal(b.conn.binaries.length, 1)
+  // The legacy round refuses zone traffic; a lone zones player gets a zone room of one seat.
+  s.hub.binary(legacy.id, binaryFrame())
+  assert.equal(legacy.conn.binaries.length + a.conn.binaries.length, 0)
+  const lone = s.add()
+  s.enterZones(lone, 'Z')
+  s.clock.t += 1000
+  s.hub.tick(s.clock.t)
+  assert.equal(lone.conn.last('matched')!.players, 1)
+  for (let i = 0; i < 20; i++) s.hub.binary(lone.id, binaryFrame())
+  assert.equal(lone.conn.closes, 0)
+})
+
+test('zones: a zones lobby of a game without a RELAY_GAMES cap is refused at entry', () => {
+  const s = setup(1000)
+  const a = s.add()
+  s.enterZones(a, 'A')
+  assert.equal(a.conn.last('lobby_error')!.reason, 'unknown game')
+  assert.equal(a.conn.last('lobby_state'), undefined)
+})
 
 test('service: first arrival opens a lobby with the countdown, the round starts at the end with whoever is there', () => {
   const s = setup()

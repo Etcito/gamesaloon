@@ -240,6 +240,11 @@ export class RelayHub {
     return [{ session: code, seat: 0, conn: a }, { session: code, seat: 1, conn: b }]
   }
 
+  /** Whether zone rooms of this game are allowed here (RELAY_GAMES). */
+  zoneGame(game: string): boolean {
+    return this.games.has(game)
+  }
+
   /** Adds an extension after the constructor's one: a message goes to the first that claims it. */
   use(ext: RelayExtension): void {
     this.ext = this.ext ? composeExtensions(this.ext, ext) : ext
@@ -247,10 +252,13 @@ export class RelayHub {
 
   /**
    * Starts a session with these 1-4 connected, unseated clients, in this seat order (a lobby round).
-   * Seats get the same `matched` frames as the quick queue. Returns the session code and its seed.
+   * Seats get the same `matched` frames as the quick queue. With opts.game, the session is a zone room of that game
+   * (binary zone traffic between its seats), which needs the game in RELAY_GAMES. Returns the session code and its seed.
    */
-  startGroup(conns: string[], payloads: unknown[], opts: { cadence: boolean; holdMs?: number }): { session: string; seed: number } {
+  startGroup(conns: string[], payloads: unknown[], opts: { cadence: boolean; holdMs?: number; game?: string | null }): { session: string; seed: number } {
     if (!conns.length || conns.length > MAX_PLAYERS || new Set(conns).size !== conns.length) throw new Error('invalid relay group')
+    const game = opts.game ?? null
+    if (game !== null && !this.zoneGame(game)) throw new Error('unknown game')
     for (const id of conns) {
       if (!this.clients.has(id)) throw new Error('invalid relay group')
       if (this.seatOf(id)) throw new Error('relay client already seated')
@@ -258,9 +266,10 @@ export class RelayHub {
     if (this.sessions.size >= MAX_ROOMS) throw new Error('server full')
     for (const id of conns) this.dropFromWaitLists(id)
     const code = `q${++this.quickSeq}`
-    const room = this.makeSession(conns.length, opts.cadence, { quick: true })
+    const room = this.makeSession(conns.length, opts.cadence, { quick: true }, game)
     room.holdMs = opts.holdMs ?? RESUME_GRACE_MS
     room.seats = conns.slice()
+    for (let s = 0; s < conns.length; s++) room.group?.set(s, conns[s])
     room.payloads = conns.map((_, i) => payloads[i] ?? null)
     this.sessions.set(code, room)
     const seed = this.startRoom(code, room)

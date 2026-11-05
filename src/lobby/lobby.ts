@@ -19,8 +19,11 @@ export interface LobbyRules {
   minPlayers: number
 }
 
-/** A lobby format: lobbies of one format are offered to each other's arrivals, never across formats. */
-export interface LobbyFormat { game: string; seats: number; cadence: boolean }
+/**
+ * A lobby format: lobbies of one format are offered to each other's arrivals, never across formats. zones: the round
+ * is a relay zone room (binary zone traffic, the game's RELAY_GAMES cap) instead of a legacy act room.
+ */
+export interface LobbyFormat { game: string; seats: number; cadence: boolean; zones?: boolean }
 
 export interface Lobby {
   id: string
@@ -86,7 +89,7 @@ export function loadLobbyRules(env: Record<string, string | undefined>): LobbyRu
 }
 
 export function formatKey(f: LobbyFormat): string {
-  return `${f.game}|${f.seats}|${f.cadence ? 1 : 0}`
+  return `${f.game}|${f.seats}|${f.cadence ? 1 : 0}${f.zones ? '|z' : ''}`
 }
 
 export function summarize(lobby: Lobby, now: number): LobbySummary {

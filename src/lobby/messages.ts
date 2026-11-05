@@ -7,7 +7,7 @@ import type { LobbyAction, LobbyMember, LobbyPhase, LobbySummary } from './lobby
 
 export const LOBBY_CLIENT_TYPES = ['lobby_enter', 'lobby_pick', 'lobby_leave', 'lobby_presence'] as const
 export const LOBBY_SERVER_TYPES = ['lobby_choice', 'lobby_state', 'lobby_watch', 'lobby_act', 'lobby_closed', 'lobby_left', 'lobby_error', 'lobby_presence'] as const
-export const LOBBY_ERROR_CODES = ['not_entered', 'unknown_lobby', 'lobby_closed', 'in_session', 'server full'] as const
+export const LOBBY_ERROR_CODES = ['not_entered', 'unknown_lobby', 'lobby_closed', 'in_session', 'server full', 'unknown game'] as const
 export type LobbyErrorCode = typeof LOBBY_ERROR_CODES[number]
 
 const taken: readonly string[] = [...RELAY_CLIENT_TYPES, ...RELAY_SERVER_TYPES, ...MATCH_CLIENT_TYPES, ...MATCH_SERVER_TYPES]
@@ -31,6 +31,8 @@ export type LobbyClientMessage =
     choice: boolean
     /** Explicit request (default false): watch the lobby of this format instead of playing in it. */
     spectate: boolean
+    /** Opt-in (default false): the round starts as a relay zone room of this game (RELAY_GAMES), with whoever joined. */
+    zones: boolean
   }
   | { t: 'lobby_pick'; action: LobbyAction; id: string | null }
   | { t: 'lobby_leave' }
@@ -64,12 +66,13 @@ export function parseLobbyMessage(msg: Record<string, unknown>): LobbyClientMess
       if (cadence !== undefined && typeof cadence !== 'boolean') return null
       if (payload !== undefined && payload !== null && !isObject(payload)) return null
       if (payload && JSON.stringify(payload).length > MAX_LOBBY_PAYLOAD) return null
-      const { choice, spectate } = msg
+      const { choice, spectate, zones } = msg
       if (choice !== undefined && typeof choice !== 'boolean') return null
       if (spectate !== undefined && typeof spectate !== 'boolean') return null
+      if (zones !== undefined && typeof zones !== 'boolean') return null
       return {
         t: 'lobby_enter', game, seats: seats as number, cadence: cadence === true, payload: (payload as Record<string, unknown>) ?? null,
-        choice: choice === true, spectate: spectate === true,
+        choice: choice === true, spectate: spectate === true, zones: zones === true,
       }
     }
     case 'lobby_pick': {

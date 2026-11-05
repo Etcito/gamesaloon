@@ -44,7 +44,8 @@ export class LobbyService implements RelayExtension {
     if (msg.t === 'lobby_presence') return this.presenceFrom(conn, msg.a)
     if (this.hub?.seatOf(conn)) return this.error(conn, 'in_session')
     if (msg.t === 'lobby_enter') {
-      const format: LobbyFormat = { game: msg.game, seats: msg.seats, cadence: msg.cadence }
+      if (msg.zones && !this.hub?.zoneGame(msg.game)) return this.error(conn, 'unknown game')
+      const format: LobbyFormat = msg.zones ? { game: msg.game, seats: msg.seats, cadence: msg.cadence, zones: true } : { game: msg.game, seats: msg.seats, cadence: msg.cadence }
       this.leave(conn, now)
       const lobbies = this.book.choices(format, now)
       if (!lobbies.length) return this.open(conn, format, msg.payload, now)
@@ -144,7 +145,7 @@ export class LobbyService implements RelayExtension {
       for (const m of [...lobby.members]) if (this.hub.seatOf(m.conn)) this.book.leave(m.conn)
       if (!this.book.get(lobby.id) || !lobby.members.length) continue
       try {
-        const { session, seed } = this.hub.startGroup(lobby.members.map((m) => m.conn), lobby.members.map((m) => m.payload), { cadence: lobby.format.cadence })
+        const { session, seed } = this.hub.startGroup(lobby.members.map((m) => m.conn), lobby.members.map((m) => m.payload), { cadence: lobby.format.cadence, game: lobby.format.zones ? lobby.format.game : null })
         this.book.started(lobby.id, session, seed)
         this.deps.log('info', `[lobby] ${lobby.id} started ${session} with ${lobby.members.length}/${lobby.format.seats}`)
         for (const c of lobby.spectators) {

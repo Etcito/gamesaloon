@@ -22,7 +22,7 @@ export class ZoneGroup {
 
   constructor(game: string, seats: number, cap: number) {
     if (!Number.isInteger(cap) || cap < 2 || cap > MAX_ZONE_PEERS
-      || !Number.isInteger(seats) || seats < 2 || seats > cap) {
+      || !Number.isInteger(seats) || seats < 1 || seats > cap) {
       throw new RangeError('invalid zone seat count or game cap')
     }
     this.game = game

@@ -28,7 +28,7 @@ Client to server:
 
 | type | fields | effect |
 | --- | --- | --- |
-| `lobby_enter` | `game` (1-64 chars), `seats` (1-4, the lobby's max seats), `cadence?` (bool), `payload?` (object, <= 512 JSON chars: the seat payload, e.g. `{g, v, name, c}`), `spectate?` (bool, default false: watch instead of playing), `choice?` (bool, default false: legacy, answer with `lobby_choice` when lobbies exist) | Joins the waiting lobby with a free seat, else opens a new one; replies `lobby_state`. With `spectate`: spectator `lobby_state` (+ `lobby_watch` on a playing lobby). With `choice` and lobbies of that format existing: replies `lobby_choice` instead. |
+| `lobby_enter` | `game` (1-64 chars), `seats` (1-4, the lobby's max seats), `cadence?` (bool), `payload?` (object, <= 512 JSON chars: the seat payload, e.g. `{g, v, name, c}`), `spectate?` (bool, default false: watch instead of playing), `choice?` (bool, default false: legacy, answer with `lobby_choice` when lobbies exist), `zones?` (bool, default false: the round starts as a relay zone room of `game`, binary zone traffic between its seats; the game needs a `RELAY_GAMES` cap, else `lobby_error unknown game`; zones and legacy lobbies never mix) | Joins the waiting lobby with a free seat, else opens a new one; replies `lobby_state`. With `spectate`: spectator `lobby_state` (+ `lobby_watch` on a playing lobby). With `choice` and lobbies of that format existing: replies `lobby_choice` instead. |
 | `lobby_pick` | `action`: `join` \| `spectate` \| `new`; `id` (required for join/spectate) | Answers the last `lobby_choice` (only sent for `choice: true`). |
 | `lobby_leave` | | Leaves the lobby (player or spectator) and forgets a pending choice. Reply `lobby_left`. |
 | `lobby_presence` | `a` (object, <= 16 keys, <= 256 JSON chars: the sender's hub avatar state, opaque to the server) | Shared hub presence, see below. Never answered; dropped silently outside a lobby or from a seated socket. |
@@ -44,7 +44,7 @@ Server to client:
 | `lobby_act` | `id, a, n, from`: every act of the round, the replay first (when `replay`), then live |
 | `lobby_closed` | `id, reason: 'ended'\|'empty'` to spectators |
 | `lobby_left` | reply to `lobby_leave` |
-| `lobby_error` | `reason`: `not_entered`, `unknown_lobby`, `lobby_closed` (join on a started or full lobby), `in_session` (the socket is seated in a relay session), `server full` |
+| `lobby_error` | `reason`: `not_entered`, `unknown_lobby`, `lobby_closed` (join on a started or full lobby), `in_session` (the socket is seated in a relay session), `server full`, `unknown game` (`zones: true` for a game without a `RELAY_GAMES` cap) |
 
 When the round starts, the **players** get the relay's usual `matched` frame (`seed, hostStarts, youAre,
 token, players, opps`), exactly as from `queue`: `players` is the number of seated players (1-4), which
