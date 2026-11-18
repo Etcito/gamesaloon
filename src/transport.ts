@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Etcito
 // node:http + ws transport: /health, upgrades, heartbeat and endpoint ticks.
 
-import { originAllowed } from './origin.ts'
+import { createDynamicOrigins, originAllowed } from './origin.ts'
+import type { DynamicOrigins } from './origin.ts'
 import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
@@ -53,6 +54,8 @@ export interface TransportOptions {
   log(level: string, msg: string): void
   autoTick?: boolean
   http?: HttpRoute[]
+  /** Test hook: replaces the registrar-backed origins built from cfg.originsUrl. */
+  dynamicOrigins?: DynamicOrigins
 }
 
 export interface Transport {
@@ -115,6 +118,7 @@ export function roomsEndpoint(hub: RoomHub): Endpoint {
 
 export async function startTransport(opts: TransportOptions): Promise<Transport> {
   const { cfg } = opts
+  const dynamicOrigins = opts.dynamicOrigins ?? (cfg.originsUrl ? createDynamicOrigins({ url: cfg.originsUrl, log: opts.log }) : null)
   const { WebSocketServer } = await import('ws')
   const endpointsByPath = new Map<string, Endpoint[]>()
   for (const endpoint of opts.endpoints) {
@@ -184,15 +188,20 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? '/').split('?')[0]
     const origin = req.headers.origin
-    const originOk = originAllowed(cfg.allowedOrigins, origin)
     const group = groups.get(path)
-    if (!group || !originOk) {
+    const refuse = (): void => {
       socket.on('error', () => {})
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       socket.destroy()
-      return
     }
-    group.wss.handleUpgrade(req, socket, head, (ws: WsSocket) => attach(ws, group, { url: req.url ?? '/', headers: req.headers }))
+    if (!group) { refuse(); return }
+    const accept = (): void => group.wss.handleUpgrade(req, socket, head, (ws: WsSocket) => attach(ws, group, { url: req.url ?? '/', headers: req.headers }))
+    if (originAllowed(cfg.allowedOrigins, origin)) { accept(); return }
+    if (!dynamicOrigins) { refuse(); return }
+    // Not in the static list: ask the registrar's list (cached; a miss on a stale cache refreshes it once, so a game
+    // published seconds ago works at once). The socket is held until the answer, which is bounded by the fetch timeout.
+    socket.on('error', () => {})
+    dynamicOrigins.allows(origin).then((ok) => { if (ok && !socket.destroyed) accept(); else refuse() }, refuse)
   })
 
   function attach(ws: WsSocket, group: { endpoints: Endpoint[]; defaultEndpoint: Endpoint }, info: UpgradeInfo): void {
@@ -336,6 +345,7 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
 
   const ticker = opts.autoTick ? setInterval(() => tick(Date.now()), TICK_MS) : null
   ticker?.unref()
+  dynamicOrigins?.start()
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -353,6 +363,7 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
     closing = (async () => {
       for (const heartbeat of heartbeats) clearInterval(heartbeat)
       if (ticker) clearInterval(ticker)
+      dynamicOrigins?.stop()
       const httpClosed = new Promise<void>((resolve) => server.close(() => resolve()))
       const sockets = [...groups.values()].flatMap(({ wss }) => [...wss.clients])
       const socketsClosed = Promise.all(sockets.map((ws) => new Promise<void>((resolve) => {

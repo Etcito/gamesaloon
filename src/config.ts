@@ -13,6 +13,8 @@ export interface Config {
   allowedOrigins: string[]
   logLevel: 'error' | 'info' | 'debug'
   rankedRequireAccount: boolean
+  /** Registrar endpoint listing extra allowed web origins (merged with allowedOrigins). Absent = static list only. */
+  originsUrl?: string
   relayGames?: ReadonlyMap<string, number>
   relayMaxBinBytes?: number
   relayBinRatePerSec?: number
@@ -64,6 +66,18 @@ export function parseGameLimits(raw: string): ReadonlyMap<string, number> {
   return limits
 }
 
+/** ALLOWED_ORIGINS_URL, else ETCITO_URL + the registrar path (the same public URL the player store uses, so a blue/green flip needs nothing). */
+function originsUrlFrom(env: Record<string, string | undefined>): string | undefined {
+  const explicit = env.ALLOWED_ORIGINS_URL?.trim()
+  const base = env.ETCITO_URL?.trim()
+  const raw = explicit || (base ? `${base.replace(/\/+$/, '')}/api/etcito-publisher/handshake/origins` : '')
+  if (raw === '') return undefined
+  let url: URL
+  try { url = new URL(raw) } catch { throw new Error('[config] ALLOWED_ORIGINS_URL') }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username !== '' || url.password !== '') throw new Error('[config] ALLOWED_ORIGINS_URL')
+  return url.toString()
+}
+
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const logLevel = env.LOG_LEVEL ?? 'info'
   if (logLevel !== 'error' && logLevel !== 'info' && logLevel !== 'debug') throw new Error('[config] LOG_LEVEL')
@@ -80,6 +94,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     logLevel,
     rankedRequireAccount: env.RANKED_REQUIRE_ACCOUNT === '1' || env.RANKED_REQUIRE_ACCOUNT === 'true',
   }
+  const originsUrl = originsUrlFrom(env)
+  if (originsUrl) config.originsUrl = originsUrl
   if (env.RELAY_GAMES !== undefined) config.relayGames = parseGameLimits(env.RELAY_GAMES)
   if (env.RELAY_MAX_BIN_BYTES !== undefined) config.relayMaxBinBytes = positiveInt(env, 'RELAY_MAX_BIN_BYTES')
   if (env.RELAY_BIN_RATE_PER_SEC !== undefined) config.relayBinRatePerSec = positiveInt(env, 'RELAY_BIN_RATE_PER_SEC')

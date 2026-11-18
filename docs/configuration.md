@@ -18,6 +18,7 @@ Source: `src/config.ts`, `src/store/config.ts`, `src/store/games.ts`, `src/main.
 | `MAX_ROOMS` | `500` | Maximum number of rooms; further `create` fails with `server_full` |
 | `MAX_CLIENTS` | `2000` | Maximum number of rooms-side connections; further connections get `server_full` and are closed (1013) |
 | `ALLOWED_ORIGINS` | empty (any origin) | Comma-separated allowed `Origin` values for the `/ws` upgrade. See below |
+| `ALLOWED_ORIGINS_URL` | `$ETCITO_URL/api/etcito-publisher/handshake/origins` when `ETCITO_URL` is set, else none | Registrar endpoint (JSON `{"origins": [...]}`) whose origins are added to `ALLOWED_ORIGINS`. See below |
 | `LOG_LEVEL` | `info` | `error`, `info` or `debug` |
 | `OWNER_GAMES` | empty | Comma-separated game names (trimmed, lowercased) treated as *owner games*: exempt from the creator caps of multi-creator mode, see [multi-game.md](multi-game.md). Empty = every game is a creator game |
 
@@ -26,6 +27,8 @@ An invalid value (a non-numeric `PORT`, an unknown `LOG_LEVEL`) stops the proces
 `MAX_ROOMS` and `MAX_CLIENTS` apply to the rooms side only. The relay has fixed limits (200 sessions, 500 sockets; `src/relay/protocol.ts`).
 
 **`ALLOWED_ORIGINS`.** An entry is an exact origin (`https://game.example.com`, no path, no trailing slash) or a subdomain wildcard `https://*.cdn.example.com` (any non-empty host label chain under that suffix, same scheme, no port unless the entry has one; `src/origin.ts`). When the list is not empty, a connection with no `Origin` header (a command-line client, a native app) is refused with HTTP 403. Leave it empty if non-browser clients must connect. Browsers always send `Origin`, so for a browser game the allow-list is effective; for anything else it is not a security boundary.
+
+**Registrar origins.** When `ALLOWED_ORIGINS_URL` (or `ETCITO_URL`) is set, an upgrade whose origin is not in `ALLOWED_ORIGINS` is checked against the list the registrar serves (same entry forms, https only, loaded at startup and every 60 s; an unknown origin on a stale list refreshes it once, at most every 5 s, so a deployment registered seconds ago works at once). The registrar list only adds to the static one: an empty `ALLOWED_ORIGINS` still allows every origin. If the registrar is unreachable the last good list is kept.
 
 ### Player store
 
