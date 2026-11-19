@@ -7,6 +7,7 @@ import { createHandshake } from './handshake.ts'
 import { defaultDeps } from './server.ts'
 import { defaultVerifiers, verifyIdentityHook } from './identity.ts'
 import { botVerifier } from './bot.ts'
+import { guestVerifier } from './guest.ts'
 import { loadStoreConfig } from './store/config.ts'
 import { openStores } from './store/setup.ts'
 import { createWavedash } from './economy/wavedash.ts'
@@ -32,7 +33,9 @@ async function main(): Promise<void> {
     hooks: {
       // guest and wavedash (user JWT against the Wavedash JWKS) are verified; itch refuses until a real verifier is injected (src/identity.ts).
       // bot is verified against the game's etc_settings (bots.enabled, bots.tokens); with no rows every bot is refused (src/bot.ts).
+      // guest is also per-game switchable (guests.enabled, src/guest.ts); a missing row still allows guests.
       verifyIdentity: verifyIdentityHook(defaultVerifiers({
+        guest: guestVerifier({ settings: game => stores.resolve(game)?.settings }),
         wavedash: wavedash.identityVerifier(),
         bot: botVerifier({ settings: game => stores.resolve(game)?.settings, log }),
       })),

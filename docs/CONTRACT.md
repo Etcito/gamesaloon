@@ -124,6 +124,9 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 | `already_reported` | This player already reported an outcome for the match. |
 | `store_unavailable` | A PlayerStore operation failed. |
 | `ranked_requires_account` | A guest asked for the ranked queue while the server requires an account (`RANKED_REQUIRE_ACCOUNT`). |
+| `guests_disabled` | A guest tried to `auth` while the game's `etc_settings` `guests.enabled` is off. |
+| `verified_identity_required` | A guest tried `eco_wavedash` or `eco_stripe`: a real-money purchase needs a verified (non-guest) identity. |
+| `game_not_allowed_for_origin` | `auth.game` or `match_queue.game` is not one of the games this connection's Origin is bound to (registrar origin->game binding). |
 | `economy_unavailable` | The game has no economy service. |
 | `insufficient_funds` | The coin balance does not cover the purchase. |
 | `no_packs` | No closed pack of that type is left. |
@@ -152,7 +155,7 @@ Messages use the GameNet relay WebSocket at `/ws`, the same path as rooms. On th
 | `too_large` | The save or UGC content exceeds its limit. |
 | `quota_exceeded` | The player's save or UGC quota is full. |
 | `forbidden` | A non-owner tried to change a visible item. |
-| `rate_limited` | Too many writes in the window. |
+| `rate_limited` | Too many writes in the window; also `auth`/`match_queue` from a guest over the per-IP cap (`GUEST_RATE_PER_MIN`/`GUEST_RATE_BURST`), never applied to a bot or an account. |
 | `not_found` | The requested item does not exist for this player. |
 | `unknown_stat` | No such stat. |
 | `stat_not_writable` | The stat is not client-writable. |
@@ -233,7 +236,7 @@ gift limit. The hard cap of a capped shop item is enforced inside the purchase's
 - `eco_claimed` { op, id, item, applied }.
 - `eco_gifted` { op, to, item, applied }.
 - `eco_blocked` { op?, player, blocked }.
-- Errors: `{ t:'error', reason, op? }` (the `op` of the request is echoed when it had one). New reasons: `economy_unavailable`, `insufficient_funds`, `no_packs`, `tx_conflict`, `unknown_product`, `unknown_reward`, `unknown_pack`, `purchase_refunded`, `bad_receipt`, `receipt_mismatch`, `not_production`, `bad_return_url`, `payment_unavailable`, `unknown_item`, `no_price`, `already_owned`, `sold_out`, `description_refused`, `already_claimed`, `not_owned`, `self_gift`, `blocked`. Any economy message can also answer `store_unavailable` when a table call fails.
+- Errors: `{ t:'error', reason, op? }` (the `op` of the request is echoed when it had one). New reasons: `economy_unavailable`, `insufficient_funds`, `no_packs`, `tx_conflict`, `unknown_product`, `unknown_reward`, `unknown_pack`, `purchase_refunded`, `bad_receipt`, `receipt_mismatch`, `not_production`, `bad_return_url`, `payment_unavailable`, `unknown_item`, `no_price`, `already_owned`, `sold_out`, `description_refused`, `already_claimed`, `not_owned`, `self_gift`, `blocked`. Any economy message can also answer `store_unavailable` when a table call fails. `eco_wavedash` and `eco_stripe` also answer `verified_identity_required` for a guest, before either reaches its own validation (r11).
 
 ### Webhooks (HTTP, no session; nothing is trusted before it is verified)
 - `POST /webhooks/wavedash` body `{receiptJwt}`: the receipt is verified as above (the game is found from the receipt audience), the buyer is the player of the identity `wavedash` / `sub` (created if new), the product is credited, then the server calls `POST https://api.wavedash.com/api/purchases/{purchaseId}/fulfill`. `purchase.refunded` takes back the coins and the still-closed packs of that purchase (opened cards are kept), and a refund seen before its purchase blocks the purchase. 2xx only when handled; a product missing from `etc_products` answers 409 and a failed fulfill 502, so Wavedash retries.
@@ -325,3 +328,4 @@ On itch.io and the web, only Handshake is used.
 - r8 (2026-10-16): documentation pass only, no wire change. Product names and internal paths removed; section 1 describes the open-source components; sections 3 and 5 aligned with the code (tiers are constants, the K formula, no fixed prices); the refund rule now says the balance never goes below zero (as r6 and the code already did).
 - r9 (2026-10-21): ranked play: `ladder` in both directions (`page_size` 10, guest `me` null, 45 s cache), error `ranked_requires_account`, `match.opponent` rating/tier/placement/games, `match_end` reason/weight/duration_ms/rewardable/rating.tier, graceful-leave forfeit (`left`), lone draw, 10-minute inactivity void, 180 s half weight, `etc_matches` match records (idempotent, written before `onMatchEnd`) and `rewardable` (no server coin credit). Additive.
 - r10 (2026-10-31): additive; game-agnostic shop, currencies, round rewards, commissions, inbox, gifts, blocks; the per-game config file and import.
+- r11 (2026-11-19): additive hardening. Errors `game_not_allowed_for_origin` (`auth`/`match_queue`.game outside the registrar's origin->game binding, see [configuration.md](configuration.md#origin-game-binding)), `verified_identity_required` (`eco_wavedash`/`eco_stripe` from a guest), `guests_disabled` (`auth provider:'guest'` while the game's `guests.enabled` is off), `rate_limited` (also for `auth`/`match_queue` from a guest, per client IP; see [configuration.md](configuration.md#guest-provider)).

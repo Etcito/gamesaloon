@@ -18,17 +18,21 @@ Source: `src/config.ts`, `src/store/config.ts`, `src/store/games.ts`, `src/main.
 | `MAX_ROOMS` | `500` | Maximum number of rooms; further `create` fails with `server_full` |
 | `MAX_CLIENTS` | `2000` | Maximum number of rooms-side connections; further connections get `server_full` and are closed (1013) |
 | `ALLOWED_ORIGINS` | empty (any origin) | Comma-separated allowed `Origin` values for the `/ws` upgrade. See below |
-| `ALLOWED_ORIGINS_URL` | `$ETCITO_URL/api/etcito-publisher/handshake/origins` when `ETCITO_URL` is set, else none | Registrar endpoint (JSON `{"origins": [...]}`) whose origins are added to `ALLOWED_ORIGINS`. See below |
+| `ALLOWED_ORIGINS_URL` | `$ETCITO_URL/api/etcito-publisher/handshake/origins` when `ETCITO_URL` is set, else none | Registrar endpoint (JSON `{"origins": [...], "games": {...}}`) whose origins are added to `ALLOWED_ORIGINS`. See below |
 | `LOG_LEVEL` | `info` | `error`, `info` or `debug` |
 | `OWNER_GAMES` | empty | Comma-separated game names (trimmed, lowercased) treated as *owner games*: exempt from the creator caps of multi-creator mode, see [multi-game.md](multi-game.md). Empty = every game is a creator game |
+| `GUEST_RATE_PER_MIN` | `30` | Guest `auth` / `match_queue` cap per client IP: token-bucket refill rate (actions per minute). Must be digits only |
+| `GUEST_RATE_BURST` | `10` | Guest `auth` / `match_queue` cap per client IP: token-bucket burst size. Must be digits only |
 
 An invalid value (a non-numeric `PORT`, an unknown `LOG_LEVEL`) stops the process at start-up with `[config] <NAME>`.
 
 `MAX_ROOMS` and `MAX_CLIENTS` apply to the rooms side only. The relay has fixed limits (200 sessions, 500 sockets; `src/relay/protocol.ts`).
 
-**`ALLOWED_ORIGINS`.** An entry is an exact origin (`https://game.example.com`, no path, no trailing slash) or a subdomain wildcard `https://*.cdn.example.com` (any non-empty host label chain under that suffix, same scheme, no port unless the entry has one; `src/origin.ts`). When the list is not empty, a connection with no `Origin` header (a command-line client, a native app) is refused with HTTP 403. Leave it empty if non-browser clients must connect. Browsers always send `Origin`, so for a browser game the allow-list is effective; for anything else it is not a security boundary.
+**`ALLOWED_ORIGINS`.** An entry is an exact origin (`https://game.example.com`, no path, no trailing slash) or a subdomain wildcard `https://*.cdn.example.com` (any non-empty host label chain under that suffix, same scheme, no port unless the entry has one; `src/origin.ts`). When the list is not empty, a connection with no `Origin` header (a command-line client, a native app) is refused with HTTP 403. Leave it empty if non-browser clients must connect. Browsers always send `Origin`, so for a browser game the allow-list is effective; for anything else it is not a security boundary. A connection admitted this way is **unbound**: see "Origin->game binding" below.
 
 **Registrar origins.** When `ALLOWED_ORIGINS_URL` (or `ETCITO_URL`) is set, an upgrade whose origin is not in `ALLOWED_ORIGINS` is checked against the list the registrar serves (same entry forms, https only, loaded at startup and every 60 s; an unknown origin on a stale list refreshes it once, at most every 5 s, so a deployment registered seconds ago works at once). The registrar list only adds to the static one: an empty `ALLOWED_ORIGINS` still allows every origin. If the registrar is unreachable the last good list is kept.
+
+**Origin->game binding.** The registrar's response may also carry `"games": {"<game code>": ["https://...", ...]}`: which published origins belong to which game. A connection admitted ONLY through this dynamic list is then bound to the game(s) its origin is registered for; the connection's `hello`, `auth`, `match_queue` and `lobby_enter` are refused with `game_not_allowed_for_origin` for any other game. A shared origin registered for several games is bound to that whole set. A connection admitted through the static `ALLOWED_ORIGINS` list, or admitted dynamically while the registrar sends no `games` field at all, is **unbound** (any game is accepted, the behaviour before this existed); a `games` field that is present but has no entry for that origin binds it to an empty set (every game refused) until the registrar's data catches up — this is a fail-closed default, so a registrar deploy that turns on game binding before it has backfilled every origin's games will start refusing those origins' connections. See `src/origin.ts` (`parseDynamicGames`, `gamesFor`) and `src/transport.ts`.
 
 ### Player store
 
@@ -51,7 +55,7 @@ The `ETCITO_` prefix is historical: these variables configure the remote table s
 
 ### What `npm start` wires
 
-`src/main.ts` calls `createHandshake` with: the configuration above; the stores from `PLAYER_STORE`; a `verifyIdentity` hook where `guest` is verified, `wavedash` is verified against Wavedash's keys and `itch` is refused (`auth_unavailable`), `bot` is checked against the game's `etc_settings` (see Bot provider); an `onMatchEnd` hook that logs one line; no `pickResident` (no AI opponents); and the payment webhook routes (`/webhooks/wavedash`, `/webhooks/wavedash/playtest`, `/webhooks/stripe`, `/webhooks/stripe/<game>`). It closes gracefully on `SIGTERM` and `SIGINT`.
+`src/main.ts` calls `createHandshake` with: the configuration above; the stores from `PLAYER_STORE`; a `verifyIdentity` hook where `guest` is verified unless the game's `guests.enabled` switch is off (see Guest provider), `wavedash` is verified against Wavedash's keys and `itch` is refused (`auth_unavailable`), `bot` is checked against the game's `etc_settings` (see Bot provider); an `onMatchEnd` hook that logs one line; no `pickResident` (no AI opponents); and the payment webhook routes (`/webhooks/wavedash`, `/webhooks/wavedash/playtest`, `/webhooks/stripe`, `/webhooks/stripe/<game>`). It closes gracefully on `SIGTERM` and `SIGINT`.
 
 ### Bot provider
 
@@ -63,6 +67,24 @@ The `bot` identity provider (`src/bot.ts`) has no environment variable: it is dr
 | `bots.tokens` | JSON `{"<bot name>": "<sha256 hex>"}` | One entry per bot: the SHA-256 (hex) of its secret. A bot name is 3..16 chars of `A-Za-z0-9_-`; invalid entries are ignored; a missing row or invalid JSON refuses every bot |
 
 A bot authenticates with token `<bot name>:<secret>`; the secret's hash is compared in constant time. Example value of `bots.tokens`: `{"RookBot": "<output of: printf %s 'the-secret' | sha256sum>"}`. The server never logs a token or a hash. `npm start` wires this verifier for every game; per-bot daily caps are not implemented yet.
+
+### Guest provider
+
+The `guest` identity provider (`src/guest.ts`) is on by default; it is switched off per game by one `etc_settings` row, written from the EtcitoGameServer administration interface and read through the same 30 s cache as the bot provider:
+
+| Key | Value | Meaning |
+|---|---|---|
+| `guests.enabled` | `0` or `false` | Turns guests OFF for the game: `auth` with `provider: 'guest'` is refused `guests_disabled`. Any other value, a missing row or a failed read **allows** guests (unlike `bots.enabled`, this fails OPEN: it is a product switch, not a secret roster) |
+
+`npm start` wires this for every game. Guest `auth` and `match_queue` are also capped per client IP (`GUEST_RATE_PER_MIN`, `GUEST_RATE_BURST` above): over the cap, both answer `rate_limited`. Bots and accounts (wavedash, itch) are never subject to this cap. The real client IP behind the reverse proxy is resolved the same way the IP limiter uses it (see "Trusted client IP" below).
+
+### Trusted client IP
+
+`src/transport.ts`'s `clientIp` trusts `X-Forwarded-For` only when the TCP peer is loopback (`127.0.0.1`/`::1`), matching the deployment in [deploying.md](deploying.md) where `HOST` is bound to loopback behind nginx; a direct, non-loopback peer (no proxy, or a misconfigured one) gets its own socket address instead, never a header a client could forge itself. When trusted, the real client is the **last** entry of `X-Forwarded-For`: nginx's `$proxy_add_x_forwarded_for` *appends* the peer it saw to whatever the client already sent, so with one proxy hop everything before that append is client-supplied and not trustworthy — reading the first entry (a common mistake) would let a client claim any IP it likes.
+
+### Verified identity for real-money purchases
+
+`eco_wavedash` (a Wavedash receipt) and `eco_stripe` (starting a Stripe checkout) require a non-guest, verified identity (an account or a bot); a guest is refused `verified_identity_required` before either is attempted. This keeps a real purchase from ever being tied to a disposable guest id that cannot be recovered, refunded or charged back against. The in-game virtual economy (coins and packs earned or spent in play: `eco_buy`, `eco_open`, `eco_reward`, `eco_shop_buy`, `eco_round`, `eco_commission`, `eco_claim`, `eco_gift`, and every read-only `eco_*`/social message) stays open to guests, as it always has (see [economy.md](economy.md)). Ranked play's own account requirement is unchanged: `RANKED_REQUIRE_ACCOUNT` above, error `ranked_requires_account`.
 
 ## Embedding
 

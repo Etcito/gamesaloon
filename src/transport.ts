@@ -19,6 +19,15 @@ const WS_OPEN = 1
 export interface UpgradeInfo {
   url: string
   headers: IncomingMessage['headers']
+  /**
+   * Game codes this connection's Origin is bound to (admitted only through the registrar's dynamic list, which
+   * also said which games serve that origin), or null/absent when unbound: statically allowed
+   * (`ALLOWED_ORIGINS`), or the registrar sent no per-game data. An unbound connection may act for any game, as
+   * before this existed.
+   */
+  boundGames?: readonly string[] | null
+  /** The real client IP behind the trusted reverse proxy (see `clientIp`), or the raw socket address with none. */
+  ip?: string | null
 }
 
 export interface EndpointSession {
@@ -79,6 +88,28 @@ interface WsServer {
   close(cb?: (err?: Error) => void): void
 }
 
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
+/**
+ * The real client IP. `HOST` is meant to be bound to loopback behind a reverse proxy (see docs/deploying.md), so
+ * `X-Forwarded-For` is trusted ONLY when the TCP peer is loopback; a direct, non-loopback peer (no proxy, or a
+ * misconfigured one) gets its own socket address instead, never a header it could have sent itself. When trusted,
+ * the real client is the LAST entry: nginx's `$proxy_add_x_forwarded_for` APPENDS the peer it saw to whatever the
+ * client already sent, so anything before that append is attacker-supplied, not the first (common) but wrong read.
+ */
+function clientIp(req: IncomingMessage): string | null {
+  const remote = req.socket.remoteAddress ?? null
+  if (remote !== null && LOOPBACK.has(remote)) {
+    const xff = req.headers['x-forwarded-for']
+    const raw = Array.isArray(xff) ? xff.join(',') : xff
+    if (raw) {
+      const parts = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+      if (parts.length > 0) return parts[parts.length - 1]!
+    }
+  }
+  return remote
+}
+
 function rawToString(data: unknown): string {
   if (typeof data === 'string') return data
   if (Array.isArray(data)) return Buffer.concat(data as Buffer[]).toString()
@@ -103,8 +134,8 @@ export function roomsEndpoint(hub: RoomHub): Endpoint {
       code: 4009,
       reason: 'too_large',
     },
-    open(conn) {
-      const id = hub.connect(conn)
+    open(conn, info) {
+      const id = hub.connect(conn, info.boundGames ?? null)
       if (id === '') return null
       return {
         id,
@@ -188,6 +219,7 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? '/').split('?')[0]
     const origin = req.headers.origin
+    const ip = clientIp(req)
     const group = groups.get(path)
     const refuse = (): void => {
       socket.on('error', () => {})
@@ -195,13 +227,20 @@ export async function startTransport(opts: TransportOptions): Promise<Transport>
       socket.destroy()
     }
     if (!group) { refuse(); return }
-    const accept = (): void => group.wss.handleUpgrade(req, socket, head, (ws: WsSocket) => attach(ws, group, { url: req.url ?? '/', headers: req.headers }))
-    if (originAllowed(cfg.allowedOrigins, origin)) { accept(); return }
+    const accept = (boundGames: readonly string[] | null): void =>
+      group.wss.handleUpgrade(req, socket, head, (ws: WsSocket) => attach(ws, group, { url: req.url ?? '/', headers: req.headers, boundGames, ip }))
+    // Statically allowed (including an empty ALLOWED_ORIGINS, i.e. "allow everything"): unbound, as before.
+    if (originAllowed(cfg.allowedOrigins, origin)) { accept(null); return }
     if (!dynamicOrigins) { refuse(); return }
     // Not in the static list: ask the registrar's list (cached; a miss on a stale cache refreshes it once, so a game
     // published seconds ago works at once). The socket is held until the answer, which is bounded by the fetch timeout.
     socket.on('error', () => {})
-    dynamicOrigins.allows(origin).then((ok) => { if (ok && !socket.destroyed) accept(); else refuse() }, refuse)
+    dynamicOrigins.allows(origin).then((ok) => {
+      if (!ok || socket.destroyed) { refuse(); return }
+      // Admitted only through the registrar: bind to the game(s) it published this origin for (null = the
+      // registrar sent no games data at all, so stay unbound rather than guess).
+      accept(dynamicOrigins.gamesFor(origin))
+    }, refuse)
   })
 
   function attach(ws: WsSocket, group: { endpoints: Endpoint[]; defaultEndpoint: Endpoint }, info: UpgradeInfo): void {

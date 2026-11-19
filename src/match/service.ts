@@ -16,7 +16,7 @@ import { resolveIdentity } from './auth.ts'
 import { Matchmaker } from './matchmaker.ts'
 import type { MatchPair, Waiter } from './matchmaker.ts'
 import { parseMatchMessage } from './messages.ts'
-import { isEconomyMessage, isOnlineMessage } from './messages.ts'
+import { isEconomyMessage, isEconomyWriteMessage, isOnlineMessage } from './messages.ts'
 import type { OnlineClientMessage } from '../online/messages.ts'
 import type { EventName } from '../achievements/service.ts'
 import type { EconomyClientMessage, MatchClientMessage } from './messages.ts'
@@ -25,6 +25,7 @@ import { EconomyUnavailable } from '../economy/service.ts'
 import type { EconomyService } from '../economy/service.ts'
 import { WavedashError } from '../economy/wavedash.ts'
 import { StripeBridgeError } from '../economy/stripe.ts'
+import { KeyedRateLimiter } from '../ratelimit.ts'
 
 export const FORFEIT_MS = 90000
 export const RESULT_WAIT_MS = 60000
@@ -103,14 +104,22 @@ export class MatchService implements RelayExtension {
   private bySession = new Map<string, ActiveMatch>()
   private byConn = new Map<string, ActiveMatch>()
   private rankedRequireAccount: boolean
+  /** Per-IP guest auth / match_queue cap (RATE 4, docs/configuration.md); a bot or an account is never limited here. */
+  private guestLimiter: KeyedRateLimiter
   private ladder = createLadder({ now: () => this.deps.now() })
 
   /** `store` is one PlayerStore for every game, or a GameRouter (one store per game, chosen by the game of auth / match_queue). */
-  constructor(deps: MatchDeps, store: PlayerStore | GameRouter, hooks: HandshakeHooks = {}, opts: { rankedRequireAccount?: boolean } = {}) {
+  constructor(deps: MatchDeps, store: PlayerStore | GameRouter, hooks: HandshakeHooks = {}, opts: {
+    rankedRequireAccount?: boolean
+    /** Guest auth / match_queue rate limit per IP; defaults match loadConfig's GUEST_RATE_PER_MIN/GUEST_RATE_BURST. */
+    guestRatePerSec?: number
+    guestRateBurst?: number
+  } = {}) {
     this.deps = deps
     this.router = 'resolve' in store ? store : singleStoreRouter(store)
     this.hooks = hooks
     this.rankedRequireAccount = opts.rankedRequireAccount ?? false
+    this.guestLimiter = new KeyedRateLimiter(opts.guestRatePerSec ?? 30 / 60, opts.guestRateBurst ?? 10)
   }
 
   attach(hub: RelayHub): void { this.hub = hub }
@@ -193,6 +202,7 @@ export class MatchService implements RelayExtension {
   }
 
   tick(nowMs: number): void {
+    this.guestLimiter.tick(nowMs)
     void this.runPairing(nowMs)
     this.runResidents(nowMs)
     for (const match of [...this.matches.values()]) {
@@ -252,6 +262,11 @@ export class MatchService implements RelayExtension {
 
   private async auth(conn: string, m: { provider: Provider; token: string; name?: string; game?: string }): Promise<void> {
     if (this.authed.has(conn)) return this.error(conn, 'already_authed')
+    if (m.game !== undefined && this.hub && !this.hub.gameAllowed(conn, m.game)) return this.error(conn, 'game_not_allowed_for_origin')
+    if (m.provider === 'guest') {
+      const ip = this.hub?.ipOf(conn)
+      if (ip && !this.guestLimiter.take(ip, this.deps.now())) return this.error(conn, 'rate_limited')
+    }
     const backend = this.router.resolve(m.game)
     if (!backend) return this.error(conn, 'bad_message')
     const res = await resolveIdentity(m.provider, m.token, m.name, this.hooks, this.deps.log, backend.game ?? m.game)
@@ -292,6 +307,8 @@ export class MatchService implements RelayExtension {
   private async economy(conn: string, m: EconomyClientMessage): Promise<void> {
     const me = this.authed.get(conn)
     if (!me) return this.error(conn, 'auth_required')
+    // Starts a real-money purchase: a guest (unverified) identity may not (see ECONOMY_WRITE_TYPES).
+    if (me.provider === 'guest' && isEconomyWriteMessage(m)) return this.error(conn, 'verified_identity_required')
     const backend = this.router.resolve(me.game ?? undefined)
     const eco = backend?.economy
     if (!eco) return this.error(conn, 'economy_unavailable')
@@ -491,7 +508,12 @@ export class MatchService implements RelayExtension {
     const me = this.authed.get(conn)
     if (!me) return this.error(conn, 'auth_required')
     if (me.kind === 'resident') return this.error(conn, 'resident_cannot_queue')
+    if (this.hub && !this.hub.gameAllowed(conn, game)) return this.error(conn, 'game_not_allowed_for_origin')
     if (queue === 'ranked' && this.rankedRequireAccount && me.provider === 'guest') return this.error(conn, 'ranked_requires_account')
+    if (me.provider === 'guest') {
+      const ip = this.hub?.ipOf(conn)
+      if (ip && !this.guestLimiter.take(ip, this.deps.now())) return this.error(conn, 'rate_limited')
+    }
     if (me.game !== null && me.game !== game) return this.error(conn, 'bad_message')
     const backend = this.router.resolve(game)
     if (!backend) return this.error(conn, 'bad_message')

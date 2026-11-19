@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { iceServersFor } from '../src/turn.ts'
 import { loadConfig } from '../src/config.ts'
-import { TokenBucket } from '../src/ratelimit.ts'
+import { KeyedRateLimiter, TokenBucket } from '../src/ratelimit.ts'
 
 const withTurn = loadConfig({ TURN_SECRET: 'secret', TURN_URLS: 'turn:turn.example.com:3478?transport=udp, turns:turn.example.com:5349' })
 
@@ -44,6 +44,8 @@ test('config: defaults', () => {
     allowedOrigins: [],
     logLevel: 'info',
     rankedRequireAccount: false,
+    guestRatePerMin: 30,
+    guestRateBurst: 10,
   })
 })
 
@@ -52,6 +54,13 @@ test('config: ranked require account', () => {
   assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: 'true' }).rankedRequireAccount, true)
   assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: '0' }).rankedRequireAccount, false)
   assert.equal(loadConfig({ RANKED_REQUIRE_ACCOUNT: 'yes' }).rankedRequireAccount, false)
+})
+
+test('config: guest rate limit', () => {
+  const cfg = loadConfig({ GUEST_RATE_PER_MIN: '5', GUEST_RATE_BURST: '2' })
+  assert.equal(cfg.guestRatePerMin, 5)
+  assert.equal(cfg.guestRateBurst, 2)
+  assert.throws(() => loadConfig({ GUEST_RATE_PER_MIN: 'x' }), /GUEST_RATE_PER_MIN/)
 })
 
 test('config: lists and numbers', () => {
@@ -87,4 +96,18 @@ test('ratelimit: burst, refusal and refill', () => {
   assert.equal(bucket.overSinceMs, 0)
   assert.equal(bucket.take(100), true)
   assert.equal(bucket.overSinceMs, null)
+})
+
+test('ratelimit: KeyedRateLimiter isolates keys and evicts idle ones on tick', () => {
+  const limiter = new KeyedRateLimiter(1, 2, 1000)
+  assert.equal(limiter.take('a', 0), true)
+  assert.equal(limiter.take('a', 0), true)
+  assert.equal(limiter.take('a', 0), false) // burst of 2 spent
+  assert.equal(limiter.take('b', 0), true) // a different key is a different bucket
+  assert.equal(limiter.size(), 2)
+  limiter.tick(500) // not idle yet
+  assert.equal(limiter.size(), 2)
+  limiter.tick(1000) // idle for >= 1000ms: dropped
+  assert.equal(limiter.size(), 0)
+  assert.equal(limiter.take('a', 1000), true) // a fresh bucket for the same key
 })

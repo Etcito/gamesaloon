@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Etcito
 import { guestIdentity } from '../hooks.ts'
 import { ProviderNotConfiguredError } from '../identity.ts'
+import { GuestsDisabledError } from '../guest.ts'
 import type { HandshakeHooks, VerifiedIdentity } from '../hooks.ts'
 import type { Identity, Provider } from '../store/types.ts'
 
 type AuthResolution =
   | { ok: true; identity: Identity; display_name: string }
-  | { ok: false; code: 'auth_failed' | 'auth_unavailable' }
+  | { ok: false; code: 'auth_failed' | 'auth_unavailable' | 'guests_disabled' }
 
 export async function resolveIdentity(
   provider: Provider,
@@ -26,6 +27,7 @@ export async function resolveIdentity(
         log('error', `[match] ${err.message}`)
         return { ok: false, code: 'auth_unavailable' }
       }
+      if (err instanceof GuestsDisabledError) return { ok: false, code: 'guests_disabled' }
       log('error', `[match] verifyIdentity failed for ${provider}`)
       return { ok: false, code: 'auth_failed' }
     }

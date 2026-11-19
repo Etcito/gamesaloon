@@ -44,7 +44,7 @@ Server to client:
 | `lobby_act` | `id, a, n, from`: every act of the round, the replay first (when `replay`), then live |
 | `lobby_closed` | `id, reason: 'ended'\|'empty'` to spectators |
 | `lobby_left` | reply to `lobby_leave` |
-| `lobby_error` | `reason`: `not_entered`, `unknown_lobby`, `lobby_closed` (join on a started or full lobby), `in_session` (the socket is seated in a relay session), `server full`, `unknown game` (`zones: true` for a game without a `RELAY_GAMES` cap) |
+| `lobby_error` | `reason`: `not_entered`, `unknown_lobby`, `lobby_closed` (join on a started or full lobby), `in_session` (the socket is seated in a relay session), `server full`, `unknown game` (`zones: true` for a game without a `RELAY_GAMES` cap), `game_not_allowed_for_origin` (`lobby_enter.game` is not one of the games this connection's Origin is bound to, see [configuration.md](configuration.md#origin-game-binding)) |
 
 When the round starts, the **players** get the relay's usual `matched` frame (`seed, hostStarts, youAre,
 token, players, opps`), exactly as from `queue`: `players` is the number of seated players (1-4), which

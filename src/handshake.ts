@@ -54,7 +54,11 @@ export function createHandshake(options: HandshakeOptions = {}): Handshake {
     hub.maxRoomsForGame = game => router.resolve(game)?.maxRooms?.()
   }
   // MatchService's public constructor takes deps, store, hooks, then options.
-  const match = new MatchService(deps, options.store ?? createMemoryStore(), options.hooks ?? {}, { rankedRequireAccount: cfg.rankedRequireAccount })
+  const match = new MatchService(deps, options.store ?? createMemoryStore(), options.hooks ?? {}, {
+    rankedRequireAccount: cfg.rankedRequireAccount,
+    guestRatePerSec: cfg.guestRatePerMin / 60,
+    guestRateBurst: cfg.guestRateBurst,
+  })
   const relayHub = new RelayHub(deps, match, {
     games: cfg.relayGames, maxBinBytes: cfg.relayMaxBinBytes, binRatePerSec: cfg.relayBinRatePerSec,
   })

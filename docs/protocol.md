@@ -99,6 +99,7 @@ Join codes are case-insensitive and surrounding spaces are trimmed.
 - **Timeouts**: `hello` within 10 s (else close 4000 `hello_timeout`). The server sends a WebSocket ping every 20 s and terminates a connection that did not answer by the next one (about 40 s). A lobby with no activity for 30 minutes is closed (members get close code 1000 `idle`). Racing rooms are not subject to the idle timeout.
 - **Capacity**: when `MAX_CLIENTS` is reached a new connection receives `error` `server_full` and is closed with 1013. When `MAX_ROOMS` is reached, `create` fails with `server_full`. In multi-creator mode a creator game also has its own room cap (message "no room available for this game", same code); see [multi-game.md](multi-game.md).
 - **Unknown game**: only when the server runs in multi-creator mode, `hello` (and `create`) with a game the server does not serve fails with `bad_message` ("unknown game"). Otherwise any `game` string is accepted.
+- **Origin->game binding**: when this connection's `Origin` was admitted only through the registrar's dynamic list (see [configuration.md](configuration.md#origin-game-binding)), `hello.game` must be one of the games that origin is registered for, else `game_not_allowed_for_origin`. A statically allowed origin is unbound (any game accepted, as before this existed).
 
 ### Error codes
 
@@ -122,6 +123,7 @@ Rooms errors look like `{"t":"error","code":"...","message":"..."}`.
 | `rate_limited` | over the rate limit; the message is dropped |
 | `server_full` | `MAX_ROOMS` or `MAX_CLIENTS` reached |
 | `too_large` | a frame over 65536 bytes (the connection is then closed with 4009) |
+| `game_not_allowed_for_origin` | `hello.game` is not one of the games this connection's Origin is bound to (see Origin->game binding above) |
 | `internal` | unexpected server failure |
 
 ### Close codes used by the rooms side
@@ -155,7 +157,7 @@ These ride on a relay connection. The pairing rules, ratings and timings are in 
 | `result` | `match_id` (1..128 chars), `outcome: 'win' \| 'loss' \| 'draw'` | yes | `result_ack` |
 | `ladder` | `page` (integer 1..1000) | yes | `ladder` |
 
-`token` is 16 to 128 characters of `[A-Za-z0-9_-]` for `guest`, and 1 to 4096 characters for `wavedash` and `itch`. `name` is used only when the player is first created, and only if it is 3 to 16 characters after trimming. `game` selects which game's player list the connection joins when the server serves several games (see [multi-game.md](multi-game.md)); with a single store or a single game it may be omitted. After `auth`, `match_queue.game` must be the game the connection authenticated into.
+`token` is 16 to 128 characters of `[A-Za-z0-9_-]` for `guest`, and 1 to 4096 characters for `wavedash` and `itch`. `name` is used only when the player is first created, and only if it is 3 to 16 characters after trimming. `game` selects which game's player list the connection joins when the server serves several games (see [multi-game.md](multi-game.md)); with a single store or a single game it may be omitted. After `auth`, `match_queue.game` must be the game the connection authenticated into. When a `game` is named (`auth.game` or `match_queue.game`) and this connection's Origin is bound to specific games (origin->game binding, [configuration.md](configuration.md#origin-game-binding)), that game must be one of them, else `game_not_allowed_for_origin`.
 
 Do not confuse `match_queue` / `match_unqueue` with the relay's legacy `queue` / `unqueue`: the legacy ones pair anonymous clients without accounts or ratings.
 
@@ -187,6 +189,10 @@ Do not confuse `match_queue` / `match_unqueue` with the relay's legacy `queue` /
 | `already_reported` | this player already reported for this match |
 | `store_unavailable` | a `PlayerStore` call failed |
 | `ranked_requires_account` | `match_queue` with `queue: 'ranked'` from a `guest` while the server sets `RANKED_REQUIRE_ACCOUNT`; the player is not queued |
+| `guests_disabled` | `auth` with `provider: 'guest'` while the game's `etc_settings` `guests.enabled` is `0`/`false` (see [configuration.md](configuration.md#guest-provider)) |
+| `verified_identity_required` | `eco_wavedash` or `eco_stripe` from a `guest`: a real-money purchase needs a verified (non-guest) identity (see [configuration.md](configuration.md#verified-identity-for-real-money-purchases)) |
+| `rate_limited` | `auth` or `match_queue` from a `guest` over the per-IP cap (`GUEST_RATE_PER_MIN`/`GUEST_RATE_BURST`); not applied to bots or accounts |
+| `game_not_allowed_for_origin` | `auth.game` or `match_queue.game` is not one of the games this connection's Origin is bound to (see [configuration.md](configuration.md#origin-game-binding)) |
 | `bad_message` | invalid fields; also an unknown `game` in `auth`, a missing `game` while several games are served, and a `match_queue.game` different from the authenticated game (relay code reused) |
 | `internal` | unexpected failure (relay code reused) |
 

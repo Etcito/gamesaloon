@@ -53,6 +53,10 @@ interface Client {
   binCount: number
   /** The page is served from localhost / 127.0.0.1 (a developer's local build; ALLOWED_ORIGINS admits it). */
   localDev: boolean
+  /** Game codes this connection's Origin is bound to (see transport.ts), or null when unbound. */
+  boundGames: readonly string[] | null
+  /** Real client IP behind the trusted reverse proxy (transport.ts), or null (e.g. a server-created resident seat). */
+  ip: string | null
 }
 
 interface Session {
@@ -98,7 +102,7 @@ export class RelayHub {
     this.binRatePerSec = opts?.binRatePerSec ?? DEFAULT_RELAY_BIN_RATE_PER_SEC
   }
 
-  connect(conn: ClientConn, _url: string, origin?: string): string {
+  connect(conn: ClientConn, _url: string, origin?: string, boundGames: readonly string[] | null = null, ip: string | null = null): string {
     if (this.clients.size >= MAX_SOCKETS) {
       conn.send(encodeRelay({ t: 'error', reason: 'server full' }))
       // ClientConn requires arguments, but the relay closes without a status.
@@ -109,7 +113,7 @@ export class RelayHub {
     const id = `c${++this.counter}-${hex}`
     this.clients.set(id, {
       id, conn, roomCode: null, cadence: false, invalidCount: 0, msgTimes: [],
-      binWindowStart: 0, binCount: 0, localDev: isLocalOrigin(origin),
+      binWindowStart: 0, binCount: 0, localDev: isLocalOrigin(origin), boundGames, ip,
     })
     return id
   }
@@ -117,6 +121,18 @@ export class RelayHub {
   /** Whether this socket's page is served from localhost / 127.0.0.1 (lobbies of their own, short wait). */
   localDev(conn: string): boolean {
     return this.clients.get(conn)?.localDev === true
+  }
+
+  /** False only when this connection is bound to games (dynamic origin admission) that do not include `game`. */
+  gameAllowed(conn: string, game: string): boolean {
+    const c = this.clients.get(conn)
+    if (!c || c.boundGames === null) return true
+    return c.boundGames.includes(game)
+  }
+
+  /** The real client IP of this connection (see transport.ts `clientIp`), or null when unknown. */
+  ipOf(conn: string): string | null {
+    return this.clients.get(conn)?.ip ?? null
   }
 
   message(conn: string, raw: string): void {

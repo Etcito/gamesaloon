@@ -100,8 +100,8 @@ test('names are trimmed', () => {
 })
 
 test('error codes, defaults and encode', () => {
-  assert.equal(ERROR_CODES.length, 17)
-  assert.equal(new Set(ERROR_CODES).size, 17)
+  assert.equal(ERROR_CODES.length, 18)
+  assert.equal(new Set(ERROR_CODES).size, 18)
   assert.deepEqual(validateSettings(DEFAULT_SETTINGS), DEFAULT_SETTINGS)
   assert.equal(encode({ t: 'pong', id: 3 }), '{"t":"pong","id":3}')
 })

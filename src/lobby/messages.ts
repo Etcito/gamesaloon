@@ -7,7 +7,7 @@ import type { LobbyAction, LobbyMember, LobbyPhase, LobbySummary } from './lobby
 
 export const LOBBY_CLIENT_TYPES = ['lobby_enter', 'lobby_pick', 'lobby_leave', 'lobby_presence'] as const
 export const LOBBY_SERVER_TYPES = ['lobby_choice', 'lobby_state', 'lobby_watch', 'lobby_act', 'lobby_closed', 'lobby_left', 'lobby_error', 'lobby_presence'] as const
-export const LOBBY_ERROR_CODES = ['not_entered', 'unknown_lobby', 'lobby_closed', 'in_session', 'server full', 'unknown game'] as const
+export const LOBBY_ERROR_CODES = ['not_entered', 'unknown_lobby', 'lobby_closed', 'in_session', 'server full', 'unknown game', 'game_not_allowed_for_origin'] as const
 export type LobbyErrorCode = typeof LOBBY_ERROR_CODES[number]
 
 const taken: readonly string[] = [...RELAY_CLIENT_TYPES, ...RELAY_SERVER_TYPES, ...MATCH_CLIENT_TYPES, ...MATCH_SERVER_TYPES]

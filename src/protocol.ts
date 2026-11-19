@@ -14,13 +14,13 @@ export type ErrorCode =
   | 'bad_message' | 'bad_version' | 'hello_required' | 'game_mismatch' | 'room_not_found'
   | 'room_full' | 'room_started' | 'not_in_room' | 'already_in_room' | 'not_owner'
   | 'bad_players' | 'bad_settings' | 'peer_not_found' | 'rate_limited' | 'server_full'
-  | 'too_large' | 'internal'
+  | 'too_large' | 'internal' | 'game_not_allowed_for_origin'
 
 export const ERROR_CODES: readonly ErrorCode[] = [
   'bad_message', 'bad_version', 'hello_required', 'game_mismatch', 'room_not_found',
   'room_full', 'room_started', 'not_in_room', 'already_in_room', 'not_owner',
   'bad_players', 'bad_settings', 'peer_not_found', 'rate_limited', 'server_full',
-  'too_large', 'internal',
+  'too_large', 'internal', 'game_not_allowed_for_origin',
 ]
 
 export interface KartBuildIds { characterId: string; bodyId: string; wheelId: string; gliderId: string }

@@ -14,6 +14,15 @@ export const ECONOMY_SERVER_TYPES = [
   'eco_state', 'eco_products', 'eco_reward', 'eco_bought', 'eco_opened', 'eco_purchase', 'eco_checkout',
   'eco_shop', 'eco_shop_bought', 'eco_round', 'eco_commissioned', 'eco_commissions', 'eco_queue', 'eco_inbox', 'eco_claimed', 'eco_gifted', 'eco_blocked',
 ] as const
+/**
+ * Economy messages that start a REAL-money purchase (a Wavedash receipt, a Stripe checkout) — gated to a
+ * verified (non-guest) identity, so a real payment is never tied to a disposable guest id that cannot be
+ * recovered, refunded or charged back against. The in-game virtual economy (`eco_buy`, `eco_open`, `eco_reward`,
+ * `eco_shop_buy`, `eco_round`, `eco_commission`, `eco_claim`, `eco_gift` and the read-only / social messages)
+ * stays open to guests: it is coins and items earned or spent in play, part of the casual experience, not a
+ * real-money purchase, and guest access to it is existing, deliberate, tested behaviour (see test/economy.*).
+ */
+export const ECONOMY_WRITE_TYPES = ['eco_wavedash', 'eco_stripe'] as const
 export const MATCH_CLIENT_TYPES = ['auth', 'match_queue', 'match_unqueue', 'result', 'ladder', 'match_status', ...ECONOMY_CLIENT_TYPES, ...ONLINE_CLIENT_TYPES] as const
 export const MATCH_SERVER_TYPES = ['authed', 'match_queued', 'match_unqueued', 'match', 'result_ack', 'match_end', 'ladder', ...ECONOMY_SERVER_TYPES, ...ONLINE_SERVER_TYPES] as const
 export const MATCH_ERROR_CODES = [
@@ -24,6 +33,7 @@ export const MATCH_ERROR_CODES = [
   'economy_unavailable', 'insufficient_funds', 'no_packs', 'tx_conflict', 'unknown_product', 'unknown_reward', 'unknown_pack',
   'purchase_refunded', 'purchases_blocked', 'bad_receipt', 'receipt_mismatch', 'not_production', 'bad_return_url', 'payment_unavailable',
   'unknown_item', 'no_price', 'already_owned', 'sold_out', 'description_refused', 'already_claimed', 'not_owned', 'self_gift', 'blocked',
+  'game_not_allowed_for_origin', 'verified_identity_required', 'guests_disabled', 'rate_limited',
   ...ONLINE_ERROR_CODES,
 ] as const
 
@@ -95,6 +105,10 @@ export function isOnlineMessage(m: MatchClientMessage): m is OnlineClientMessage
 }
 export function isEconomyMessage(m: MatchClientMessage): m is EconomyClientMessage {
   return (ECONOMY_CLIENT_TYPES as readonly string[]).includes(m.t)
+}
+/** True for the economy messages gated to a verified identity (see `ECONOMY_WRITE_TYPES`). */
+export function isEconomyWriteMessage(m: MatchClientMessage): boolean {
+  return (ECONOMY_WRITE_TYPES as readonly string[]).includes(m.t)
 }
 
 export type MatchParseError = { error: 'bad_message'; message: string } | { error: 'bad_queue' }

@@ -61,6 +61,7 @@ This file describes the rooms protocol spoken on the `/ws` endpoint. `src/protoc
 | server_full | MAX_ROOMS reached (or a per-game room cap), answered to `create`; or MAX_CLIENTS reached at connection time, in which case the `error` frame is followed by a close with code 1013 |
 | too_large | a message over 65536 bytes (the connection then closes with 4009) |
 | internal | unexpected server failure |
+| game_not_allowed_for_origin | hello.game is not one of the games this connection's Origin is bound to (dynamic registrar origin->game binding, docs/configuration.md#origin-game-binding) |
 
 ## Rules
 - **Room codes:** 5 chars from 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'. Joins accept any case and surrounding spaces.
@@ -71,7 +72,7 @@ This file describes the rooms protocol spoken on the `/ws` endpoint. `src/protoc
 
 ## Matchmaking and ranked
 
-The same `/ws` endpoint also serves GameSaloon matchmaking on a relay connection: `auth`, `match_queue` (`quick` or `ranked`), `result`, the `match` / `match_end` replies and the read-only `ladder` (10 entries per page, guests allowed with no `me` row). The message shapes and error reasons are in [docs/protocol.md](docs/protocol.md#matchmaking-messages); the pairing, rating, forfeit, inactivity, match-record and `rewardable` rules are in [docs/matchmaking-and-elo.md](docs/matchmaking-and-elo.md). Ranked play can require an account (`RANKED_REQUIRE_ACCOUNT`), refused with `ranked_requires_account`.
+The same `/ws` endpoint also serves GameSaloon matchmaking on a relay connection: `auth`, `match_queue` (`quick` or `ranked`), `result`, the `match` / `match_end` replies and the read-only `ladder` (10 entries per page, guests allowed with no `me` row). The message shapes and error reasons are in [docs/protocol.md](docs/protocol.md#matchmaking-messages); the pairing, rating, forfeit, inactivity, match-record and `rewardable` rules are in [docs/matchmaking-and-elo.md](docs/matchmaking-and-elo.md). Ranked play can require an account (`RANKED_REQUIRE_ACCOUNT`), refused with `ranked_requires_account`. A guest's `auth`/`match_queue` is also capped per client IP (`GUEST_RATE_PER_MIN`/`GUEST_RATE_BURST`, error `rate_limited`), a game can switch guests off entirely (`guests.enabled`, error `guests_disabled`), a real-money purchase (`eco_wavedash`, `eco_stripe`) needs a non-guest identity (`verified_identity_required`), and `auth`/`match_queue.game` is checked against this connection's origin->game binding when it has one (`game_not_allowed_for_origin`) — see [docs/configuration.md](docs/configuration.md#guest-provider).
 
 ### Bot provider
 

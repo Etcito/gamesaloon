@@ -30,6 +30,8 @@ interface Client {
   room: Room | null
   peer: number
   players: LocalPlayer[]
+  /** Game codes this connection's Origin is bound to (see transport.ts), or null when unbound. */
+  boundGames: readonly string[] | null
 }
 
 interface Room {
@@ -58,7 +60,7 @@ export class RoomHub {
     this.deps = deps
   }
 
-  connect(conn: ClientConn): string {
+  connect(conn: ClientConn, boundGames: readonly string[] | null = null): string {
     if (this.clients.size >= this.cfg.maxClients) {
       conn.send(encode({ t: 'error', code: 'server_full', message: 'server is full' }))
       conn.close(1013, 'server_full')
@@ -69,7 +71,7 @@ export class RoomHub {
     const id = `c${this.counter}-${hex}`
     this.clients.set(id, {
       id, conn, connectedAt: this.deps.now(), hello: false, game: '', name: '',
-      bucket: new TokenBucket(RATE_PER_SEC, RATE_BURST), room: null, peer: -1, players: [],
+      bucket: new TokenBucket(RATE_PER_SEC, RATE_BURST), room: null, peer: -1, players: [], boundGames,
     })
     return id
   }
@@ -139,6 +141,9 @@ export class RoomHub {
         return
       }
       if (this.gameKnown && !this.gameKnown(m.game)) return this.error(c, 'bad_message', 'unknown game', m.rid)
+      if (c.boundGames && !c.boundGames.includes(m.game)) {
+        return this.error(c, 'game_not_allowed_for_origin', 'this origin is not registered for this game', m.rid)
+      }
       c.hello = true
       c.game = m.game
       c.name = m.name

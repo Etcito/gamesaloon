@@ -13,6 +13,9 @@ export interface Config {
   allowedOrigins: string[]
   logLevel: 'error' | 'info' | 'debug'
   rankedRequireAccount: boolean
+  /** Guest `auth` / `match_queue` cap per IP (token bucket): refill rate (actions/minute) and burst size. */
+  guestRatePerMin: number
+  guestRateBurst: number
   /** Registrar endpoint listing extra allowed web origins (merged with allowedOrigins). Absent = static list only. */
   originsUrl?: string
   relayGames?: ReadonlyMap<string, number>
@@ -93,6 +96,8 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     allowedOrigins: list(env.ALLOWED_ORIGINS, ''),
     logLevel,
     rankedRequireAccount: env.RANKED_REQUIRE_ACCOUNT === '1' || env.RANKED_REQUIRE_ACCOUNT === 'true',
+    guestRatePerMin: int(env, 'GUEST_RATE_PER_MIN', 30),
+    guestRateBurst: int(env, 'GUEST_RATE_BURST', 10),
   }
   const originsUrl = originsUrlFrom(env)
   if (originsUrl) config.originsUrl = originsUrl

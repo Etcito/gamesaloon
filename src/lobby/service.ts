@@ -44,6 +44,7 @@ export class LobbyService implements RelayExtension {
     if (msg.t === 'lobby_presence') return this.presenceFrom(conn, msg.a)
     if (this.hub?.seatOf(conn)) return this.error(conn, 'in_session')
     if (msg.t === 'lobby_enter') {
+      if (this.hub && !this.hub.gameAllowed(conn, msg.game)) return this.error(conn, 'game_not_allowed_for_origin')
       if (msg.zones && !this.hub?.zoneGame(msg.game)) return this.error(conn, 'unknown game')
       const format: LobbyFormat = msg.zones ? { game: msg.game, seats: msg.seats, cadence: msg.cadence, zones: true } : { game: msg.game, seats: msg.seats, cadence: msg.cadence }
       // A local build (page on localhost) gets lobbies of its own with a short wait: two local browsers meet in

@@ -126,11 +126,21 @@ test('wavedash session: receipt over the socket credits, error codes are specifi
   assert.equal(pushed.coins, 350)
 })
 
-test('guest cannot use a wavedash receipt; stripe is refused when not configured', async () => {
+test('guest cannot attempt a wavedash receipt or a stripe checkout: refused up front, never reaching either', async () => {
   const w = await world()
   const a = w.client()
   await a.send({ t: 'auth', provider: 'guest', token: 'guest-token-for-economy-4' })
   await a.send({ t: 'eco_wavedash', receipt_jwt: receipt(w.signer) })
+  assert.deepEqual(a.conn.last(), { t: 'error', reason: 'verified_identity_required' })
+  await a.send({ t: 'eco_stripe', product: 'coins-250', return_url: 'https://game.example/' })
+  assert.deepEqual(a.conn.last(), { t: 'error', reason: 'verified_identity_required' })
+})
+
+test('verified identity: a wavedash receipt still reaches receipt validation; stripe is refused when not configured', async () => {
+  const w = await world()
+  const a = w.client()
+  await a.send({ t: 'auth', provider: 'wavedash', token: userJwt(w.signer, { sub: 'wd-verified-1' }) })
+  await a.send({ t: 'eco_wavedash', receipt_jwt: receipt(w.signer, { sub: 'someone-else', purchaseId: 'p-verified' }) })
   assert.deepEqual(a.conn.last(), { t: 'error', reason: 'receipt_mismatch' })
   await a.send({ t: 'eco_stripe', product: 'coins-250', return_url: 'https://game.example/' })
   assert.deepEqual(a.conn.last(), { t: 'error', reason: 'economy_unavailable' })
